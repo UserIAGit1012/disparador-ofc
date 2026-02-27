@@ -47,6 +47,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [messages, setMessages] = useState<DispatchMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startingRef = useRef(false); // Prevents concurrent /start calls
   const userActionRef = useRef(false); // Blocks auto-resume after user pause/cancel
@@ -132,13 +133,15 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   // --- Control Actions ---
   const handlePause = async () => {
-    userActionRef.current = true; // Block auto-resume
+    userActionRef.current = true;
     setActionLoading("pause");
+    setActionError(null);
     try {
       await api.pauseDispatch(dispatchId);
+      setStatus((prev) => prev ? { ...prev, status: "paused" } : prev);
       await fetchData();
-    } catch (err) {
-      console.error("Failed to pause:", err);
+    } catch (err: any) {
+      setActionError(`Falha ao pausar: ${err.message}`);
     } finally {
       setActionLoading(null);
     }
@@ -146,27 +149,37 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   const handleCancel = async () => {
     if (!window.confirm("Cancelar este disparo? Mensagens pendentes nao serao enviadas.")) return;
-    userActionRef.current = true; // Block auto-resume
+    userActionRef.current = true;
     setActionLoading("cancel");
+    setActionError(null);
     try {
       await api.cancelDispatch(dispatchId);
+      // Optimistic update — show cancelled immediately
+      setStatus((prev) => prev ? { ...prev, status: "cancelled" } : prev);
+      // Stop polling
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
       await fetchData();
-    } catch (err) {
-      console.error("Failed to cancel:", err);
+    } catch (err: any) {
+      setActionError(`Falha ao cancelar: ${err.message}`);
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleResume = async () => {
-    userActionRef.current = false; // Allow auto-resume again
+    userActionRef.current = false;
     setActionLoading("resume");
+    setActionError(null);
     try {
       await api.resumeDispatch(dispatchId);
+      setStatus((prev) => prev ? { ...prev, status: "running" } : prev);
       triggerStart();
       await fetchData();
-    } catch (err) {
-      console.error("Failed to resume:", err);
+    } catch (err: any) {
+      setActionError(`Falha ao retomar: ${err.message}`);
     } finally {
       setActionLoading(null);
     }
@@ -287,6 +300,13 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
               </span>
             )}
           </div>
+
+          {/* Error message */}
+          {actionError && (
+            <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
+              {actionError}
+            </div>
+          )}
 
           {/* Control buttons */}
           {!isDone && (

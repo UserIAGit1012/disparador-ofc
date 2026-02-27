@@ -3,8 +3,10 @@ import { createClient } from '@supabase/supabase-js';
 
 function getSupabaseServer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-  return createClient(url, key);
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  // Use service role key if available (bypasses RLS), fallback to anon
+  return createClient(url, serviceKey || anonKey);
 }
 
 export async function POST(
@@ -13,7 +15,7 @@ export async function POST(
 ) {
   try {
     const dispatchId = params.id;
-    const { action } = await req.json(); // "pause" or "cancel"
+    const { action } = await req.json();
     const sb = getSupabaseServer();
 
     const { data: dispatch } = await sb
@@ -27,22 +29,45 @@ export async function POST(
     }
 
     if (action === 'pause') {
-      // Pause: set status to "paused" so executor skips it
-      await sb.from('dispatches').update({
+      const { error: updateErr } = await sb.from('dispatches').update({
         status: 'paused',
         updated_at: new Date().toISOString(),
       }).eq('id', dispatchId);
+
+      if (updateErr) {
+        return NextResponse.json({ error: `Failed to pause: ${updateErr.message}` }, { status: 500 });
+      }
+
+      // Verify the update actually took effect
+      const { data: verify } = await sb.from('dispatches').select('status').eq('id', dispatchId).single();
+      if (verify?.status !== 'paused') {
+        return NextResponse.json({
+          error: `Pause failed: status is still "${verify?.status}". Check Supabase RLS policies.`,
+        }, { status: 500 });
+      }
 
       return NextResponse.json({ success: true, status: 'paused' });
     }
 
     if (action === 'cancel') {
-      // Cancel: set dispatch to cancelled and all pending messages to cancelled
-      await sb.from('dispatches').update({
+      const { error: updateErr } = await sb.from('dispatches').update({
         status: 'cancelled',
         updated_at: new Date().toISOString(),
       }).eq('id', dispatchId);
 
+      if (updateErr) {
+        return NextResponse.json({ error: `Failed to cancel: ${updateErr.message}` }, { status: 500 });
+      }
+
+      // Verify the update
+      const { data: verify } = await sb.from('dispatches').select('status').eq('id', dispatchId).single();
+      if (verify?.status !== 'cancelled') {
+        return NextResponse.json({
+          error: `Cancel failed: status is still "${verify?.status}". Check Supabase RLS policies.`,
+        }, { status: 500 });
+      }
+
+      // Cancel all pending messages
       await sb.from('dispatch_messages').update({
         status: 'cancelled',
         error_message: 'Cancelado pelo usuario',
@@ -70,11 +95,14 @@ export async function POST(
     }
 
     if (action === 'resume') {
-      // Resume a paused dispatch
-      await sb.from('dispatches').update({
+      const { error: updateErr } = await sb.from('dispatches').update({
         status: 'running',
         updated_at: new Date().toISOString(),
       }).eq('id', dispatchId);
+
+      if (updateErr) {
+        return NextResponse.json({ error: `Failed to resume: ${updateErr.message}` }, { status: 500 });
+      }
 
       return NextResponse.json({ success: true, status: 'running' });
     }
