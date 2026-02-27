@@ -16,9 +16,9 @@ function randomDelay(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1) + min) * 1000;
 }
 
-const MAX_EXECUTION_MS = 55000; // ~55s safety margin for Vercel timeout
+const MAX_EXECUTION_MS = 50000; // 50s safety margin for Vercel
+const MAX_CONSECUTIVE_ERRORS = 5; // Circuit breaker: stop after 5 errors in a row
 
-// Resolve a template variable for a specific contact
 function resolveVar(
   variablesConfig: Record<string, any>,
   key: string,
@@ -37,7 +37,6 @@ function resolveVar(
   }
 }
 
-// Build per-contact processed params from template_config and contact data
 function buildProcessedParamsForContact(
   templateConfig: any,
   contact: { name?: string; phone?: string }
@@ -45,14 +44,13 @@ function buildProcessedParamsForContact(
   const variablesConfig = templateConfig.variablesConfig || {};
   const bodyParams: Record<string, string> = {};
 
-  for (const [key, config] of Object.entries(variablesConfig)) {
+  for (const [key] of Object.entries(variablesConfig)) {
     if (key === 'header_media_url') continue;
     bodyParams[key] = resolveVar(variablesConfig, key, contact);
   }
 
   const processedParams: Record<string, any> = { body: bodyParams };
 
-  // Handle header media
   const headerMediaUrl = variablesConfig['header_media_url']?.value;
   if (headerMediaUrl) {
     const baseParams = templateConfig.processedParams || {};
@@ -66,7 +64,6 @@ function buildProcessedParamsForContact(
   return processedParams;
 }
 
-// Build the resolved message text for display in Chatwoot
 function buildMessageContent(
   templateConfig: any,
   contact: { name?: string; phone?: string }
@@ -98,13 +95,21 @@ function buildMessageContent(
   return parts.join('\n\n') || '';
 }
 
-// Process a single dispatch - shared between cron and direct execution
+// Check if dispatch was paused or cancelled (reads fresh status from DB)
+async function isDispatchStopped(sb: SupabaseClient, dispatchId: string): Promise<boolean> {
+  const { data } = await sb
+    .from('dispatches')
+    .select('status')
+    .eq('id', dispatchId)
+    .single();
+  return data?.status === 'paused' || data?.status === 'cancelled';
+}
+
 async function processDispatch(
   sb: SupabaseClient,
   dispatch: any,
   startTime: number
 ): Promise<number> {
-  // Get pending messages for this dispatch
   const { data: pendingMessages } = await sb
     .from('dispatch_messages')
     .select('*')
@@ -124,12 +129,27 @@ async function processDispatch(
   let sentCount = dispatch.sent_count || 0;
   let errorCount = dispatch.error_count || 0;
   let processed = 0;
+  let consecutiveErrors = 0;
 
   for (const msg of pendingMessages) {
     // Check time budget
     if (Date.now() - startTime > MAX_EXECUTION_MS) break;
 
-    // Build per-contact processed params
+    // Circuit breaker: too many consecutive errors
+    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+      await sb.from('dispatches').update({
+        status: 'paused',
+        updated_at: new Date().toISOString(),
+      }).eq('id', dispatch.id);
+      break;
+    }
+
+    // Check if user paused/cancelled (every 5 messages to avoid too many DB calls)
+    if (processed > 0 && processed % 5 === 0) {
+      const stopped = await isDispatchStopped(sb, dispatch.id);
+      if (stopped) break;
+    }
+
     const contact = {
       name: msg.contact_name || undefined,
       phone: msg.contact_phone || undefined,
@@ -161,12 +181,14 @@ async function processDispatch(
 
       sentCount++;
       processed++;
+      consecutiveErrors = 0; // Reset on success
     } catch (err: any) {
       await sb.from('dispatch_messages').update({
         status: 'error',
         error_message: err.message,
       }).eq('id', msg.id);
       errorCount++;
+      consecutiveErrors++;
     }
 
     // Update dispatch counts
@@ -176,7 +198,7 @@ async function processDispatch(
       updated_at: new Date().toISOString(),
     }).eq('id', dispatch.id);
 
-    // Delay between messages
+    // Delay between messages (skip if running out of time)
     const delay = randomDelay(delayMin, delayMax);
     if (Date.now() - startTime + delay < MAX_EXECUTION_MS) {
       await sleep(delay);
@@ -199,7 +221,6 @@ async function processDispatch(
   return processed;
 }
 
-// Execute a specific dispatch by ID (called from /api/dispatches/[id]/start)
 export async function executeDispatchById(dispatchId: string) {
   const sb = getSupabaseServer();
   const startTime = Date.now();
@@ -214,7 +235,6 @@ export async function executeDispatchById(dispatchId: string) {
     throw new Error(`Dispatch not found: ${dispatchId}`);
   }
 
-  // Only process pending, running or scheduled dispatches
   if (!['pending', 'running', 'scheduled'].includes(dispatch.status)) {
     return { processed: 0, message: `Dispatch status is ${dispatch.status}, skipping` };
   }
@@ -230,12 +250,10 @@ export async function executeDispatchById(dispatchId: string) {
   return { processed, message: `Processed ${processed} messages for dispatch ${dispatchId}` };
 }
 
-// Execute scheduled dispatches (called from cron)
 export async function executeScheduledDispatches() {
   const sb = getSupabaseServer();
   const now = new Date().toISOString();
 
-  // Find scheduled dispatches that are due + pending/running with remaining messages
   const { data: scheduledDispatches } = await sb
     .from('dispatches')
     .select('*')
@@ -244,16 +262,14 @@ export async function executeScheduledDispatches() {
     .order('scheduled_at', { ascending: true })
     .limit(5);
 
-  const { data: pendingDispatches } = await sb
+  const { data: runningDispatches } = await sb
     .from('dispatches')
     .select('*')
     .in('status', ['pending', 'running'])
     .order('created_at', { ascending: true })
     .limit(5);
 
-  const dispatches = [...(scheduledDispatches || []), ...(pendingDispatches || [])];
-
-  // Deduplicate by id
+  const dispatches = [...(scheduledDispatches || []), ...(runningDispatches || [])];
   const seen = new Set<string>();
   const uniqueDispatches = dispatches.filter((d) => {
     if (seen.has(d.id)) return false;
@@ -271,7 +287,6 @@ export async function executeScheduledDispatches() {
   for (const dispatch of uniqueDispatches) {
     if (Date.now() - startTime > MAX_EXECUTION_MS) break;
 
-    // Mark as running
     await sb.from('dispatches').update({
       status: 'running',
       updated_at: new Date().toISOString(),

@@ -82,6 +82,24 @@ export const api = {
       updated_at: string;
     }>(`/dispatches/${dispatchId}/status`),
 
+  pauseDispatch: (dispatchId: string) =>
+    request<{ success: boolean; status: string }>(
+      `/dispatches/${dispatchId}/cancel`,
+      { method: 'POST', body: JSON.stringify({ action: 'pause' }) }
+    ),
+
+  cancelDispatch: (dispatchId: string) =>
+    request<{ success: boolean; status: string }>(
+      `/dispatches/${dispatchId}/cancel`,
+      { method: 'POST', body: JSON.stringify({ action: 'cancel' }) }
+    ),
+
+  resumeDispatch: (dispatchId: string) =>
+    request<{ success: boolean; status: string }>(
+      `/dispatches/${dispatchId}/cancel`,
+      { method: 'POST', body: JSON.stringify({ action: 'resume' }) }
+    ),
+
   getDashboardStats: (accountId: number, month?: string) => {
     const params = new URLSearchParams({ account_id: accountId.toString() });
     if (month) params.set('month', month);

@@ -8,7 +8,17 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
 import { formatUsd, formatBrl, usdToBrl } from "@/lib/costs";
-import { ArrowLeft, RefreshCw, CheckCircle2, XCircle, Clock, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
+  Clock,
+  Loader2,
+  Pause,
+  Play,
+  Ban,
+} from "lucide-react";
 import type { DispatchMessage } from "@/types";
 
 interface Props {
@@ -29,15 +39,36 @@ interface DispatchStatus {
   updated_at: string;
 }
 
+const POLL_INTERVAL = 3000;
+const STALE_THRESHOLD_MS = 70000; // 70s — if updated_at is older than this, dispatch probably stalled
+
 export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [status, setStatus] = useState<DispatchStatus | null>(null);
   const [messages, setMessages] = useState<DispatchMessage[]>([]);
   const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const startingRef = useRef(false); // Prevents concurrent /start calls
 
-  const isDone = status?.status === "completed" || status?.status === "cancelled";
+  const isDone =
+    status?.status === "completed" || status?.status === "cancelled";
+  const isPaused = status?.status === "paused";
+  const isRunning = status?.status === "running";
 
-  const triggerStartRef = useRef(false);
+  const triggerStart = useCallback(async () => {
+    if (startingRef.current) return;
+    startingRef.current = true;
+    try {
+      await api.startDispatch(dispatchId);
+    } catch (err) {
+      console.error("Failed to trigger /start:", err);
+    } finally {
+      // Allow re-triggering after a cooldown
+      setTimeout(() => {
+        startingRef.current = false;
+      }, 5000);
+    }
+  }, [dispatchId]);
 
   const fetchData = useCallback(async () => {
     try {
@@ -48,38 +79,40 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       setStatus(statusData);
       setMessages(messagesData);
 
-      // Auto-trigger: if dispatch is scheduled and time has passed, start it
+      // Auto-trigger start for scheduled/pending dispatches
       if (
-        statusData.status === "scheduled" &&
-        !triggerStartRef.current
+        (statusData.status === "scheduled" || statusData.status === "pending") &&
+        statusData.pending_count > 0
       ) {
-        triggerStartRef.current = true;
-        api.startDispatch(dispatchId).catch(console.error);
+        triggerStart();
       }
 
-      // Also trigger if status is pending (just created, needs to start processing)
+      // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages,
+      // re-trigger /start (Vercel probably timed out after processing a batch)
       if (
-        statusData.status === "pending" &&
+        statusData.status === "running" &&
         statusData.pending_count > 0 &&
-        !triggerStartRef.current
+        statusData.updated_at
       ) {
-        triggerStartRef.current = true;
-        api.startDispatch(dispatchId).catch(console.error);
+        const updatedAt = new Date(statusData.updated_at).getTime();
+        const staleSince = Date.now() - updatedAt;
+        if (staleSince > STALE_THRESHOLD_MS) {
+          console.log(
+            `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
+          );
+          triggerStart();
+        }
       }
     } catch (err) {
       console.error("Failed to fetch dispatch status:", err);
     } finally {
       setLoading(false);
     }
-  }, [dispatchId]);
+  }, [dispatchId, triggerStart]);
 
   useEffect(() => {
     fetchData();
-
-    intervalRef.current = setInterval(() => {
-      fetchData();
-    }, 3000);
-
+    intervalRef.current = setInterval(fetchData, POLL_INTERVAL);
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
@@ -92,6 +125,46 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       intervalRef.current = null;
     }
   }, [isDone]);
+
+  // --- Control Actions ---
+  const handlePause = async () => {
+    setActionLoading("pause");
+    try {
+      await api.pauseDispatch(dispatchId);
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to pause:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleCancel = async () => {
+    if (!window.confirm("Cancelar este disparo? Mensagens pendentes nao serao enviadas.")) return;
+    setActionLoading("cancel");
+    try {
+      await api.cancelDispatch(dispatchId);
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to cancel:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleResume = async () => {
+    setActionLoading("resume");
+    try {
+      await api.resumeDispatch(dispatchId);
+      // After resuming, trigger /start to begin processing again
+      triggerStart();
+      await fetchData();
+    } catch (err) {
+      console.error("Failed to resume:", err);
+    } finally {
+      setActionLoading(null);
+    }
+  };
 
   if (loading && !status) {
     return (
@@ -118,18 +191,22 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const processed = status.sent_count + status.error_count;
   const percentage = total > 0 ? Math.round((processed / total) * 100) : 0;
 
-  const sentMessages = messages.filter((m) => m.status === "sent");
-  const errorMessages = messages.filter((m) => m.status === "error");
-
-  const statusLabel: Record<string, { text: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
+  const statusLabel: Record<
+    string,
+    { text: string; variant: "default" | "secondary" | "destructive" | "outline" }
+  > = {
     pending: { text: "Pendente", variant: "secondary" },
     running: { text: "Enviando...", variant: "default" },
     completed: { text: "Concluido", variant: "outline" },
     cancelled: { text: "Cancelado", variant: "destructive" },
     scheduled: { text: "Agendado", variant: "secondary" },
+    paused: { text: "Pausado", variant: "secondary" },
   };
 
-  const current = statusLabel[status.status] || { text: status.status, variant: "secondary" as const };
+  const current = statusLabel[status.status] || {
+    text: status.status,
+    variant: "secondary" as const,
+  };
 
   return (
     <div className="space-y-4 max-w-4xl mx-auto">
@@ -145,46 +222,114 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
             <CardTitle className="text-lg">Monitoramento do Disparo</CardTitle>
             <div className="flex items-center gap-2">
               <Badge variant={current.variant}>{current.text}</Badge>
-              {!isDone && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+              {!isDone && !isPaused && (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              )}
             </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {/* Metrics */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div className="text-center p-3 rounded-lg bg-muted/50">
               <p className="text-2xl font-bold">{total}</p>
               <p className="text-xs text-muted-foreground">Total</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-green-500/10">
-              <p className="text-2xl font-bold text-green-600">{status.sent_count}</p>
+              <p className="text-2xl font-bold text-green-600">
+                {status.sent_count}
+              </p>
               <p className="text-xs text-muted-foreground">Enviadas</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-destructive/10">
-              <p className="text-2xl font-bold text-destructive">{status.error_count}</p>
+              <p className="text-2xl font-bold text-destructive">
+                {status.error_count}
+              </p>
               <p className="text-xs text-muted-foreground">Erros</p>
             </div>
             <div className="text-center p-3 rounded-lg bg-yellow-500/10">
-              <p className="text-2xl font-bold text-yellow-600">{status.pending_count}</p>
+              <p className="text-2xl font-bold text-yellow-600">
+                {status.pending_count}
+              </p>
               <p className="text-xs text-muted-foreground">Pendentes</p>
             </div>
           </div>
 
+          {/* Progress bar */}
           <div className="space-y-2">
             <div className="flex items-center justify-between text-sm">
-              <span>{processed} / {total} processadas</span>
+              <span>
+                {processed} / {total} processadas
+              </span>
               <span className="font-medium">{percentage}%</span>
             </div>
             <Progress value={percentage} />
           </div>
 
+          {/* Template & cost info */}
           <div className="flex items-center justify-between text-sm text-muted-foreground">
-            <span>Template: <span className="font-medium text-foreground">{status.template_name}</span></span>
+            <span>
+              Template:{" "}
+              <span className="font-medium text-foreground">
+                {status.template_name}
+              </span>
+            </span>
             {status.estimated_cost_usd > 0 && (
               <span>
-                Custo: {formatUsd(status.estimated_cost_usd)} ({formatBrl(usdToBrl(status.estimated_cost_usd))})
+                Custo: {formatUsd(status.estimated_cost_usd)} (
+                {formatBrl(usdToBrl(status.estimated_cost_usd))})
               </span>
             )}
           </div>
+
+          {/* Control buttons */}
+          {!isDone && (
+            <div className="flex items-center gap-2 pt-2 border-t">
+              {isRunning && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handlePause}
+                  disabled={!!actionLoading}
+                >
+                  {actionLoading === "pause" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Pause className="mr-2 h-4 w-4" />
+                  )}
+                  Pausar
+                </Button>
+              )}
+              {isPaused && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResume}
+                  disabled={!!actionLoading}
+                >
+                  {actionLoading === "resume" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Play className="mr-2 h-4 w-4" />
+                  )}
+                  Retomar
+                </Button>
+              )}
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={handleCancel}
+                disabled={!!actionLoading}
+              >
+                {actionLoading === "cancel" ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : (
+                  <Ban className="mr-2 h-4 w-4" />
+                )}
+                Cancelar Disparo
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -215,6 +360,8 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                       <CheckCircle2 className="h-3 w-3 text-green-600 shrink-0" />
                     ) : msg.status === "error" ? (
                       <XCircle className="h-3 w-3 text-destructive shrink-0" />
+                    ) : msg.status === "cancelled" ? (
+                      <Ban className="h-3 w-3 text-muted-foreground shrink-0" />
                     ) : (
                       <Clock className="h-3 w-3 text-yellow-600 shrink-0" />
                     )}
@@ -226,6 +373,9 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                       <span className="text-destructive truncate max-w-[200px]">
                         {msg.error_message}
                       </span>
+                    )}
+                    {msg.status === "cancelled" && (
+                      <span className="text-muted-foreground">cancelado</span>
                     )}
                     {msg.sent_at && (
                       <span className="text-muted-foreground shrink-0">
