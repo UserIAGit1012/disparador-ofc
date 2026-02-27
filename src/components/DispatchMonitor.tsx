@@ -40,7 +40,7 @@ interface DispatchStatus {
 }
 
 const POLL_INTERVAL = 3000;
-const STALE_THRESHOLD_MS = 70000; // 70s — if updated_at is older than this, dispatch probably stalled
+const STALE_THRESHOLD_MS = 15000; // 15s — fallback re-trigger if server self-chain fails
 
 export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [status, setStatus] = useState<DispatchStatus | null>(null);
@@ -68,7 +68,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       // Allow re-triggering after a cooldown
       setTimeout(() => {
         startingRef.current = false;
-      }, 5000);
+      }, 2000);
     }
   }, [dispatchId]);
 

@@ -111,6 +111,14 @@ async function processDispatch(
   dispatch: any,
   startTime: number
 ): Promise<number> {
+  // Recovery: reset stuck "sending" messages from crashed executions (older than 2 min)
+  const twoMinAgo = new Date(Date.now() - 120000).toISOString();
+  await sb.from('dispatch_messages')
+    .update({ status: 'pending' })
+    .eq('dispatch_id', dispatch.id)
+    .eq('status', 'sending')
+    .lt('updated_at', twoMinAgo);
+
   const { data: pendingMessages } = await sb
     .from('dispatch_messages')
     .select('*')
@@ -120,7 +128,16 @@ async function processDispatch(
     .limit(100);
 
   if (!pendingMessages || pendingMessages.length === 0) {
-    await finalizeDispatch(sb, dispatch.id);
+    // Also check if there are any "sending" messages still in flight
+    const { count: sendingCount } = await sb
+      .from('dispatch_messages')
+      .select('*', { count: 'exact', head: true })
+      .eq('dispatch_id', dispatch.id)
+      .eq('status', 'sending');
+
+    if (!sendingCount || sendingCount === 0) {
+      await finalizeDispatch(sb, dispatch.id);
+    }
     return 0;
   }
 
