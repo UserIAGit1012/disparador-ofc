@@ -111,13 +111,15 @@ async function processDispatch(
   dispatch: any,
   startTime: number
 ): Promise<number> {
-  // Recovery: reset stuck "sending" messages from crashed executions (older than 2 min)
-  const twoMinAgo = new Date(Date.now() - 120000).toISOString();
-  await sb.from('dispatch_messages')
+  // Recovery: reset stuck "sending" messages from crashed executions
+  // Safe: even if another execution is processing, the claim mechanism prevents double-sending
+  const { error: recoveryErr } = await sb.from('dispatch_messages')
     .update({ status: 'pending' })
     .eq('dispatch_id', dispatch.id)
-    .eq('status', 'sending')
-    .lt('updated_at', twoMinAgo);
+    .eq('status', 'sending');
+  if (recoveryErr) {
+    console.error('Recovery update failed (non-critical):', recoveryErr.message);
+  }
 
   const { data: pendingMessages } = await sb
     .from('dispatch_messages')
@@ -241,14 +243,14 @@ async function processDispatch(
     }
   }
 
-  // Check if all messages are done
-  const { count } = await sb
+  // Check if all messages are done (no pending and no sending)
+  const { count: remainingCount } = await sb
     .from('dispatch_messages')
     .select('*', { count: 'exact', head: true })
     .eq('dispatch_id', dispatch.id)
-    .eq('status', 'pending');
+    .in('status', ['pending', 'sending']);
 
-  if (count === 0) {
+  if (remainingCount === 0) {
     await finalizeDispatch(sb, dispatch.id);
   }
 

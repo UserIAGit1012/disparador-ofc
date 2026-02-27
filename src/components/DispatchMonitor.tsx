@@ -73,46 +73,50 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   }, [dispatchId]);
 
   const fetchData = useCallback(async () => {
+    // Fetch status and messages INDEPENDENTLY (if one fails, the other still updates)
+    let statusData: DispatchStatus | null = null;
     try {
-      const [statusData, messagesData] = await Promise.all([
-        api.getDispatchStatus(dispatchId),
-        api.getDispatchMessages(dispatchId),
-      ]);
+      statusData = await api.getDispatchStatus(dispatchId);
       setStatus(statusData);
-      setMessages(messagesData);
+    } catch (err) {
+      console.error("Failed to fetch status:", err);
+    }
 
-      // Skip auto-resume if user just paused/cancelled
-      if (!userActionRef.current) {
-        // Auto-trigger start for scheduled/pending dispatches
-        if (
-          (statusData.status === "scheduled" || statusData.status === "pending") &&
-          statusData.pending_count > 0
-        ) {
+    try {
+      const messagesData = await api.getDispatchMessages(dispatchId);
+      setMessages(messagesData);
+    } catch (err) {
+      console.error("Failed to fetch messages:", err);
+    }
+
+    // Auto-resume logic (only if status was fetched successfully)
+    if (statusData && !userActionRef.current) {
+      // Auto-trigger start for scheduled/pending dispatches
+      if (
+        (statusData.status === "scheduled" || statusData.status === "pending") &&
+        statusData.pending_count > 0
+      ) {
+        triggerStart();
+      }
+
+      // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages
+      if (
+        statusData.status === "running" &&
+        statusData.pending_count > 0 &&
+        statusData.updated_at
+      ) {
+        const updatedAt = new Date(statusData.updated_at).getTime();
+        const staleSince = Date.now() - updatedAt;
+        if (staleSince > STALE_THRESHOLD_MS) {
+          console.log(
+            `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
+          );
           triggerStart();
         }
-
-        // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages,
-        // re-trigger /start (Vercel probably timed out after processing a batch)
-        if (
-          statusData.status === "running" &&
-          statusData.pending_count > 0 &&
-          statusData.updated_at
-        ) {
-          const updatedAt = new Date(statusData.updated_at).getTime();
-          const staleSince = Date.now() - updatedAt;
-          if (staleSince > STALE_THRESHOLD_MS) {
-            console.log(
-              `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
-            );
-            triggerStart();
-          }
-        }
       }
-    } catch (err) {
-      console.error("Failed to fetch dispatch status:", err);
-    } finally {
-      setLoading(false);
     }
+
+    setLoading(false);
   }, [dispatchId, triggerStart]);
 
   useEffect(() => {
