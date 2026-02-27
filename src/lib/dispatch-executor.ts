@@ -131,6 +131,10 @@ async function processDispatch(
   let processed = 0;
   let consecutiveErrors = 0;
 
+  // Check if already stopped before processing any message
+  const alreadyStopped = await isDispatchStopped(sb, dispatch.id);
+  if (alreadyStopped) return 0;
+
   for (const msg of pendingMessages) {
     // Check time budget
     if (Date.now() - startTime > MAX_EXECUTION_MS) break;
@@ -239,11 +243,16 @@ export async function executeDispatchById(dispatchId: string) {
     return { processed: 0, message: `Dispatch status is ${dispatch.status}, skipping` };
   }
 
-  // Mark as running
-  await sb.from('dispatches').update({
+  // Mark as running — only if status is still in an allowed state (prevents race with cancel/pause)
+  const { data: updated } = await sb.from('dispatches').update({
     status: 'running',
     updated_at: new Date().toISOString(),
-  }).eq('id', dispatchId);
+  }).eq('id', dispatchId).in('status', ['pending', 'running', 'scheduled']).select('id');
+
+  if (!updated || updated.length === 0) {
+    // Status was changed (e.g. cancelled/paused) between our read and update
+    return { processed: 0, message: `Dispatch ${dispatchId} status changed, skipping` };
+  }
 
   const processed = await processDispatch(sb, dispatch, startTime);
 

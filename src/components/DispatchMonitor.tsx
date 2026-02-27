@@ -49,6 +49,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startingRef = useRef(false); // Prevents concurrent /start calls
+  const userActionRef = useRef(false); // Blocks auto-resume after user pause/cancel
 
   const isDone =
     status?.status === "completed" || status?.status === "cancelled";
@@ -79,28 +80,31 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       setStatus(statusData);
       setMessages(messagesData);
 
-      // Auto-trigger start for scheduled/pending dispatches
-      if (
-        (statusData.status === "scheduled" || statusData.status === "pending") &&
-        statusData.pending_count > 0
-      ) {
-        triggerStart();
-      }
-
-      // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages,
-      // re-trigger /start (Vercel probably timed out after processing a batch)
-      if (
-        statusData.status === "running" &&
-        statusData.pending_count > 0 &&
-        statusData.updated_at
-      ) {
-        const updatedAt = new Date(statusData.updated_at).getTime();
-        const staleSince = Date.now() - updatedAt;
-        if (staleSince > STALE_THRESHOLD_MS) {
-          console.log(
-            `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
-          );
+      // Skip auto-resume if user just paused/cancelled
+      if (!userActionRef.current) {
+        // Auto-trigger start for scheduled/pending dispatches
+        if (
+          (statusData.status === "scheduled" || statusData.status === "pending") &&
+          statusData.pending_count > 0
+        ) {
           triggerStart();
+        }
+
+        // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages,
+        // re-trigger /start (Vercel probably timed out after processing a batch)
+        if (
+          statusData.status === "running" &&
+          statusData.pending_count > 0 &&
+          statusData.updated_at
+        ) {
+          const updatedAt = new Date(statusData.updated_at).getTime();
+          const staleSince = Date.now() - updatedAt;
+          if (staleSince > STALE_THRESHOLD_MS) {
+            console.log(
+              `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
+            );
+            triggerStart();
+          }
         }
       }
     } catch (err) {
@@ -128,6 +132,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   // --- Control Actions ---
   const handlePause = async () => {
+    userActionRef.current = true; // Block auto-resume
     setActionLoading("pause");
     try {
       await api.pauseDispatch(dispatchId);
@@ -141,6 +146,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   const handleCancel = async () => {
     if (!window.confirm("Cancelar este disparo? Mensagens pendentes nao serao enviadas.")) return;
+    userActionRef.current = true; // Block auto-resume
     setActionLoading("cancel");
     try {
       await api.cancelDispatch(dispatchId);
@@ -153,10 +159,10 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   };
 
   const handleResume = async () => {
+    userActionRef.current = false; // Allow auto-resume again
     setActionLoading("resume");
     try {
       await api.resumeDispatch(dispatchId);
-      // After resuming, trigger /start to begin processing again
       triggerStart();
       await fetchData();
     } catch (err) {

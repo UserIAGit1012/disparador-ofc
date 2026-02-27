@@ -69,7 +69,7 @@ export default function AccountOverview({
   }, [accountId]);
 
   const activeDispatches = dispatches.filter(
-    (d) => d.status === "running" || d.status === "pending"
+    (d) => d.status === "running" || d.status === "pending" || d.status === "paused"
   );
   const scheduledDispatches = dispatches.filter((d) => d.status === "scheduled");
   const recentDispatches = dispatches.filter(
@@ -80,6 +80,7 @@ export default function AccountOverview({
     const map: Record<string, { text: string; variant: "default" | "secondary" | "destructive" | "outline" }> = {
       running: { text: "Enviando", variant: "default" },
       pending: { text: "Pendente", variant: "secondary" },
+      paused: { text: "Pausado", variant: "secondary" },
       scheduled: { text: "Agendado", variant: "secondary" },
       completed: { text: "Concluido", variant: "outline" },
       cancelled: { text: "Cancelado", variant: "destructive" },
