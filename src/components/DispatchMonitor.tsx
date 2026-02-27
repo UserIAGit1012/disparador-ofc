@@ -139,7 +139,8 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     try {
       await api.pauseDispatch(dispatchId);
       setStatus((prev) => prev ? { ...prev, status: "paused" } : prev);
-      await fetchData();
+      // Delayed fetch so optimistic update isn't overwritten
+      setTimeout(() => fetchData(), 2000);
     } catch (err: any) {
       setActionError(`Falha ao pausar: ${err.message}`);
     } finally {
@@ -155,13 +156,23 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     try {
       await api.cancelDispatch(dispatchId);
       // Optimistic update — show cancelled immediately
-      setStatus((prev) => prev ? { ...prev, status: "cancelled" } : prev);
-      // Stop polling
+      setStatus((prev) => prev ? { ...prev, status: "cancelled", pending_count: 0 } : prev);
+      // Stop polling — don't fetchData (would overwrite optimistic update)
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
-      await fetchData();
+      // Delayed fetch to sync final counts from DB
+      setTimeout(async () => {
+        try {
+          const [s, m] = await Promise.all([
+            api.getDispatchStatus(dispatchId),
+            api.getDispatchMessages(dispatchId),
+          ]);
+          setStatus(s);
+          setMessages(m);
+        } catch {}
+      }, 2000);
     } catch (err: any) {
       setActionError(`Falha ao cancelar: ${err.message}`);
     } finally {

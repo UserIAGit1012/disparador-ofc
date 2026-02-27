@@ -67,11 +67,11 @@ export async function POST(
         }, { status: 500 });
       }
 
-      // Cancel all pending messages
+      // Cancel all pending and sending messages
       await sb.from('dispatch_messages').update({
         status: 'cancelled',
         error_message: 'Cancelado pelo usuario',
-      }).eq('dispatch_id', dispatchId).eq('status', 'pending');
+      }).eq('dispatch_id', dispatchId).in('status', ['pending', 'sending']);
 
       // Get final counts
       const { data: msgs } = await sb

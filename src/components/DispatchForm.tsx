@@ -223,11 +223,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
     }));
     await sb.from("dispatch_messages").insert(messages);
 
-    // If not scheduled, fire-and-forget start
-    if (!isScheduled) {
-      api.startDispatch(dispatchId).catch(console.error);
-    }
-
+    // Monitor will auto-detect pending status and trigger /start
     setSubmitting(false);
     onDispatchCreated(dispatchId);
   };

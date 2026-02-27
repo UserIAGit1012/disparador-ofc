@@ -155,6 +155,18 @@ async function processDispatch(
       if (stopped) break;
     }
 
+    // Atomically claim this message (prevents duplicate sending if two executions run concurrently)
+    const { data: claimed } = await sb.from('dispatch_messages')
+      .update({ status: 'sending' })
+      .eq('id', msg.id)
+      .eq('status', 'pending')
+      .select('id');
+
+    if (!claimed || claimed.length === 0) {
+      // Already claimed by another execution or cancelled — skip
+      continue;
+    }
+
     const contact = {
       name: msg.contact_name || undefined,
       phone: msg.contact_phone || undefined,
@@ -186,7 +198,7 @@ async function processDispatch(
 
       sentCount++;
       processed++;
-      consecutiveErrors = 0; // Reset on success
+      consecutiveErrors = 0;
     } catch (err: any) {
       await sb.from('dispatch_messages').update({
         status: 'error',

@@ -35,8 +35,10 @@ export async function GET(
 
     const counts = {
       pending: 0,
+      sending: 0,
       sent: 0,
       error: 0,
+      cancelled: 0,
     };
 
     for (const msg of messages || []) {
@@ -44,6 +46,9 @@ export async function GET(
         counts[msg.status as keyof typeof counts]++;
       }
     }
+
+    // "sending" counts as pending (currently being processed)
+    counts.pending += counts.sending;
 
     return NextResponse.json({
       id: dispatch.id,
