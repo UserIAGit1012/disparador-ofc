@@ -111,16 +111,6 @@ async function processDispatch(
   dispatch: any,
   startTime: number
 ): Promise<number> {
-  // Recovery: reset stuck "sending" messages from crashed executions
-  // Safe: even if another execution is processing, the claim mechanism prevents double-sending
-  const { error: recoveryErr } = await sb.from('dispatch_messages')
-    .update({ status: 'pending' })
-    .eq('dispatch_id', dispatch.id)
-    .eq('status', 'sending');
-  if (recoveryErr) {
-    console.error('Recovery update failed (non-critical):', recoveryErr.message);
-  }
-
   const { data: pendingMessages } = await sb
     .from('dispatch_messages')
     .select('*')
@@ -208,21 +198,44 @@ async function processDispatch(
         }
       );
 
-      const cost = getMessageCostUsd(msg.template_category || 'MARKETING');
-      await sb.from('dispatch_messages').update({
+      // Critical: update status to "sent" first (must succeed)
+      const { error: sentErr } = await sb.from('dispatch_messages').update({
         status: 'sent',
-        sent_at: new Date().toISOString(),
-        cost_usd: cost,
       }).eq('id', msg.id);
+
+      if (sentErr) {
+        console.error(`Failed to mark message ${msg.id} as sent:`, sentErr.message);
+      }
+
+      // Nice-to-have: add extra fields (may fail if columns don't exist)
+      const cost = getMessageCostUsd(msg.template_category || 'MARKETING');
+      try {
+        await sb.from('dispatch_messages').update({
+          sent_at: new Date().toISOString(),
+          cost_usd: cost,
+        }).eq('id', msg.id);
+      } catch { /* columns may not exist */ }
 
       sentCount++;
       processed++;
       consecutiveErrors = 0;
     } catch (err: any) {
-      await sb.from('dispatch_messages').update({
+      // Critical: update status to "error" first
+      const { error: errUpdate } = await sb.from('dispatch_messages').update({
         status: 'error',
-        error_message: err.message,
       }).eq('id', msg.id);
+
+      if (errUpdate) {
+        console.error(`Failed to mark message ${msg.id} as error:`, errUpdate.message);
+      }
+
+      // Nice-to-have: add error message
+      try {
+        await sb.from('dispatch_messages').update({
+          error_message: err.message?.substring(0, 500) || 'Unknown error',
+        }).eq('id', msg.id);
+      } catch { /* column may not exist */ }
+
       errorCount++;
       consecutiveErrors++;
     }
