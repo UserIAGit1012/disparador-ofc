@@ -55,8 +55,21 @@ export default function LabelSelector({ accountId, onConversationsLoaded }: Prop
 
       while (hasMore) {
         const result = await api.filterConversations(accountId, filterPayload, page);
-        allConversations = [...allConversations, ...result.data];
-        hasMore = result.data.length > 0 && allConversations.length < result.meta.all_count;
+        const mapped: Conversation[] = (result.data || []).map((c: any) => ({
+          id: c.id,
+          inbox_id: c.inbox_id || 0,
+          status: c.status || "open",
+          contact: {
+            id: c.meta?.sender?.id || c.contact?.id || 0,
+            name: c.meta?.sender?.name || c.contact?.name || "",
+            phone_number: c.meta?.sender?.phone_number || c.contact?.phone_number || "",
+          },
+          labels: c.labels || [],
+          selected: true,
+          last_activity_at: c.last_activity_at || undefined,
+        }));
+        allConversations = [...allConversations, ...mapped];
+        hasMore = mapped.length > 0 && allConversations.length < result.meta.all_count;
         page++;
         if (page > 50) break; // Safety limit
       }
