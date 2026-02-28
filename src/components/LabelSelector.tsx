@@ -43,7 +43,7 @@ export default function LabelSelector({ accountId, onConversationsLoaded }: Prop
       const filterPayload = {
         payload: selectedLabels.map((label, index) => ({
           attribute_key: "labels",
-          filter_operator: "contains",
+          filter_operator: "equal_to",
           values: [label],
           ...(index < selectedLabels.length - 1 ? { query_operator: "OR" as const } : {}),
         })),
