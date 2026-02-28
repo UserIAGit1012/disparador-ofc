@@ -198,6 +198,24 @@ async function processDispatch(
         }
       );
 
+      // Post-send actions (non-blocking)
+      if (dispatch.open_conversation) {
+        try {
+          await chatwootPost(
+            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/toggle_status`,
+            { status: 'open' }
+          );
+        } catch { /* must not block dispatch flow */ }
+      }
+      if (dispatch.assign_agent_id) {
+        try {
+          await chatwootPost(
+            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/assignments`,
+            { assignee_id: dispatch.assign_agent_id }
+          );
+        } catch { /* must not block dispatch flow */ }
+      }
+
       // Critical: update status to "sent" first (must succeed)
       const { error: sentErr } = await sb.from('dispatch_messages').update({
         status: 'sent',

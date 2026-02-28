@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -38,10 +38,18 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
   const [delayMax, setDelayMax] = useState(15);
   const [blacklistDays, setBlacklistDays] = useState(7);
   const [scheduledAt, setScheduledAt] = useState<string | null>(null);
+  const [openConversation, setOpenConversation] = useState(false);
+  const [assignAgentId, setAssignAgentId] = useState<number | null>(null);
+  const [agents, setAgents] = useState<{ id: number; name: string; availability_status: string }[]>([]);
 
   const [blacklistFiltered, setBlacklistFiltered] = useState(0);
   const [blacklistTotal, setBlacklistTotal] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (!accountId) return;
+    api.getAgents(accountId).then(setAgents).catch(() => setAgents([]));
+  }, [accountId]);
 
   const handleInboxChange = (id: number) => {
     setInboxId(id);
@@ -190,6 +198,8 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
         estimated_cost_usd: estimatedCost,
         delay_min: delayMin,
         delay_max: delayMax,
+        open_conversation: openConversation,
+        assign_agent_id: assignAgentId,
         template_config: {
           ...templatePayloadBase,
           processedParams: buildProcessedParams({}),
@@ -342,6 +352,11 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
             onScheduleChange={setScheduledAt}
             messageCount={selectedCount}
             templateCategory={template?.category || "MARKETING"}
+            openConversation={openConversation}
+            onOpenConversationChange={setOpenConversation}
+            assignAgentId={assignAgentId}
+            onAssignAgentChange={setAssignAgentId}
+            agents={agents}
           />
 
           <Separator />

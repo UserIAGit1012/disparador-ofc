@@ -13,6 +13,9 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 export const api = {
   getAccounts: () => request<any[]>('/accounts'),
 
+  getAgents: (accountId: number) =>
+    request<any[]>(`/accounts/${accountId}/agents`),
+
   getInboxes: (accountId: number) =>
     request<any[]>(`/accounts/${accountId}/inboxes`),
 
