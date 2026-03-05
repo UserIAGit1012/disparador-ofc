@@ -1,5 +1,5 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
-import { chatwootPost } from '@/lib/chatwoot';
+import { chatwootPost, chatwootGet } from '@/lib/chatwoot';
 import { getMessageCostUsd } from '@/lib/costs';
 
 function getSupabaseServer(): SupabaseClient {
@@ -17,7 +17,7 @@ function randomDelay(min: number, max: number) {
   return Math.floor(Math.random() * (max - min + 1) + min) * 1000;
 }
 
-const MAX_EXECUTION_MS = 50000; // 50s safety margin for Vercel
+const MAX_EXECUTION_MS = 8000; // 8s safety margin for Vercel (fallback only — browser drives sends now)
 const MAX_CONSECUTIVE_ERRORS = 5; // Circuit breaker: stop after 5 errors in a row
 
 function resolveVar(
@@ -158,8 +158,8 @@ async function processDispatch(
       break;
     }
 
-    // Check if user paused/cancelled (every 5 messages to avoid too many DB calls)
-    if (processed > 0 && processed % 5 === 0) {
+    // Check if user paused/cancelled EVERY message for instant cancel
+    if (processed > 0) {
       const stopped = await isDispatchStopped(sb, dispatch.id);
       if (stopped) break;
     }
@@ -212,6 +212,19 @@ async function processDispatch(
           await chatwootPost(
             `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/assignments`,
             { assignee_id: dispatch.assign_agent_id }
+          );
+        } catch { /* must not block dispatch flow */ }
+      }
+      if (dispatch.post_send_labels && dispatch.post_send_labels.length > 0) {
+        try {
+          const convData = await chatwootGet(
+            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}`
+          );
+          const currentLabels: string[] = convData?.labels || [];
+          const merged = [...new Set([...currentLabels, ...dispatch.post_send_labels])];
+          await chatwootPost(
+            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/labels`,
+            { labels: merged }
           );
         } catch { /* must not block dispatch flow */ }
       }

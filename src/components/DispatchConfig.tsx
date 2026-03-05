@@ -4,6 +4,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -19,6 +21,12 @@ interface Agent {
   id: number;
   name: string;
   availability_status: string;
+}
+
+interface LabelOption {
+  id: number;
+  title: string;
+  color?: string;
 }
 
 interface Props {
@@ -37,6 +45,9 @@ interface Props {
   assignAgentId: number | null;
   onAssignAgentChange: (value: number | null) => void;
   agents: Agent[];
+  postSendLabels: string[];
+  onPostSendLabelsChange: (value: string[]) => void;
+  availableLabels: LabelOption[];
 }
 
 export default function DispatchConfig({
@@ -55,6 +66,9 @@ export default function DispatchConfig({
   assignAgentId,
   onAssignAgentChange,
   agents,
+  postSendLabels,
+  onPostSendLabelsChange,
+  availableLabels,
 }: Props) {
   return (
     <div className="space-y-4">
@@ -156,6 +170,58 @@ export default function DispatchConfig({
                 ))}
               </SelectContent>
             </Select>
+          </div>
+        )}
+
+        {/* Post-send labels */}
+        {availableLabels.length > 0 && (
+          <div className="space-y-2">
+            <Label className="text-sm font-medium">Adicionar etiquetas apos envio:</Label>
+            <ScrollArea className="h-32 rounded-md border p-2">
+              <div className="space-y-1">
+                {availableLabels.map((label) => (
+                  <div key={label.id} className="flex items-center space-x-2">
+                    <Checkbox
+                      id={`post-label-${label.id}`}
+                      checked={postSendLabels.includes(label.title)}
+                      onCheckedChange={(checked) => {
+                        if (checked) {
+                          onPostSendLabelsChange([...postSendLabels, label.title]);
+                        } else {
+                          onPostSendLabelsChange(postSendLabels.filter((l) => l !== label.title));
+                        }
+                      }}
+                    />
+                    <label
+                      htmlFor={`post-label-${label.id}`}
+                      className="text-sm cursor-pointer flex items-center gap-2"
+                    >
+                      {label.color && (
+                        <span
+                          className="w-3 h-3 rounded-full inline-block"
+                          style={{ backgroundColor: label.color }}
+                        />
+                      )}
+                      {label.title}
+                    </label>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+            {postSendLabels.length > 0 && (
+              <div className="flex flex-wrap gap-1">
+                {postSendLabels.map((label) => (
+                  <Badge
+                    key={label}
+                    variant="secondary"
+                    className="cursor-pointer"
+                    onClick={() => onPostSendLabelsChange(postSendLabels.filter((l) => l !== label))}
+                  >
+                    {label} x
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>

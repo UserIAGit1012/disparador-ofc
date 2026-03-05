@@ -18,6 +18,7 @@ import {
   Pause,
   Play,
   Ban,
+  Trash2,
 } from "lucide-react";
 import type { DispatchMessage } from "@/types";
 
@@ -39,8 +40,13 @@ interface DispatchStatus {
   updated_at: string;
 }
 
-const POLL_INTERVAL = 3000;
-const STALE_THRESHOLD_MS = 15000; // 15s — fallback re-trigger if server self-chain fails
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomDelay(min: number, max: number) {
+  return Math.floor(Math.random() * (max - min + 1) + min) * 1000;
+}
 
 export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [status, setStatus] = useState<DispatchStatus | null>(null);
@@ -48,103 +54,178 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startingRef = useRef(false); // Prevents concurrent /start calls
-  const userActionRef = useRef(false); // Blocks auto-resume after user pause/cancel
+  const [sending, setSending] = useState(false);
+
+  const abortRef = useRef(false);
+  const sendLoopRunningRef = useRef(false);
+  const messagesIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Track if cancel was requested — prevents sendLoop from restarting
+  const cancelledRef = useRef(false);
 
   const isDone =
     status?.status === "completed" || status?.status === "cancelled";
   const isPaused = status?.status === "paused";
   const isRunning = status?.status === "running";
 
-  const triggerStart = useCallback(async () => {
-    if (startingRef.current) return;
-    startingRef.current = true;
+  // Fetch full status + messages (for initial load and final sync)
+  const fetchFullStatus = useCallback(async () => {
     try {
-      await api.startDispatch(dispatchId);
+      const [s, m] = await Promise.all([
+        api.getDispatchStatus(dispatchId),
+        api.getDispatchMessages(dispatchId),
+      ]);
+      setStatus(s);
+      setMessages(m);
+      return s;
     } catch (err) {
-      console.error("Failed to trigger /start:", err);
-    } finally {
-      // Allow re-triggering after a cooldown
-      setTimeout(() => {
-        startingRef.current = false;
-      }, 2000);
+      console.error("Failed to fetch status:", err);
+      return null;
     }
   }, [dispatchId]);
 
-  const fetchData = useCallback(async () => {
-    // Fetch status and messages INDEPENDENTLY (if one fails, the other still updates)
-    let statusData: DispatchStatus | null = null;
+  // Fetch only messages (for periodic log refresh during send loop)
+  const fetchMessages = useCallback(async () => {
     try {
-      statusData = await api.getDispatchStatus(dispatchId);
-      setStatus(statusData);
-    } catch (err) {
-      console.error("Failed to fetch status:", err);
-    }
-
-    try {
-      const messagesData = await api.getDispatchMessages(dispatchId);
-      setMessages(messagesData);
+      const m = await api.getDispatchMessages(dispatchId);
+      setMessages(m);
     } catch (err) {
       console.error("Failed to fetch messages:", err);
     }
+  }, [dispatchId]);
 
-    // Auto-resume logic (only if status was fetched successfully)
-    if (statusData && !userActionRef.current) {
-      // Auto-trigger start for scheduled/pending dispatches
-      if (
-        (statusData.status === "scheduled" || statusData.status === "pending") &&
-        statusData.pending_count > 0
-      ) {
-        triggerStart();
-      }
+  // Start periodic message log refresh
+  const startMessagePolling = useCallback(() => {
+    if (messagesIntervalRef.current) return;
+    messagesIntervalRef.current = setInterval(fetchMessages, 5000);
+  }, [fetchMessages]);
 
-      // Auto-resume: if dispatch is "running" but updated_at is stale and there are pending messages
-      if (
-        statusData.status === "running" &&
-        statusData.pending_count > 0 &&
-        statusData.updated_at
-      ) {
-        const updatedAt = new Date(statusData.updated_at).getTime();
-        const staleSince = Date.now() - updatedAt;
-        if (staleSince > STALE_THRESHOLD_MS) {
-          console.log(
-            `Dispatch stale for ${Math.round(staleSince / 1000)}s, re-triggering /start`
-          );
-          triggerStart();
+  // Stop periodic message log refresh
+  const stopMessagePolling = useCallback(() => {
+    if (messagesIntervalRef.current) {
+      clearInterval(messagesIntervalRef.current);
+      messagesIntervalRef.current = null;
+    }
+  }, []);
+
+  // ---- Browser-Driven Send Loop ----
+  const sendLoop = useCallback(async () => {
+    if (sendLoopRunningRef.current) return;
+    if (cancelledRef.current) return; // Don't start if already cancelled
+
+    sendLoopRunningRef.current = true;
+    setSending(true);
+    abortRef.current = false;
+
+    // NOTE: No resumeDispatch() call here!
+    // The send-next endpoint handles pending→running transition atomically.
+
+    startMessagePolling();
+
+    let consecutiveErrors = 0;
+
+    while (!abortRef.current) {
+      try {
+        const result = await api.sendNext(dispatchId);
+
+        // If abort was set during the API call, don't update status
+        if (abortRef.current) break;
+
+        // Update status from result immediately (real-time counts)
+        setStatus((prev) => {
+          if (!prev) return prev;
+          if (result.done) {
+            return {
+              ...prev,
+              sent_count: result.sent_count,
+              error_count: result.error_count,
+              pending_count: result.remaining,
+              status: result.reason === 'completed' ? 'completed' :
+                      result.reason === 'stopped' ? prev.status : prev.status,
+            };
+          }
+          return {
+            ...prev,
+            sent_count: result.sent_count,
+            error_count: result.error_count,
+            pending_count: result.remaining,
+            status: 'running',
+          };
+        });
+
+        consecutiveErrors = 0;
+
+        if (result.done) break;
+
+        if (result.waiting) {
+          await sleep(3000);
+          continue;
         }
+
+        // Delay between messages (happens in the BROWSER, not server)
+        const delay = randomDelay(result.delay_min, result.delay_max);
+        await sleep(delay);
+      } catch (err: any) {
+        if (abortRef.current) break;
+        console.error("sendNext error:", err);
+        consecutiveErrors++;
+
+        if (consecutiveErrors >= 3) {
+          console.error("Too many consecutive errors, stopping send loop");
+          break;
+        }
+
+        await sleep(2000);
       }
     }
 
-    setLoading(false);
-  }, [dispatchId, triggerStart]);
+    stopMessagePolling();
+    setSending(false);
+    sendLoopRunningRef.current = false;
 
-  useEffect(() => {
-    fetchData();
-    intervalRef.current = setInterval(fetchData, POLL_INTERVAL);
-    return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
-    };
-  }, [fetchData]);
-
-  // Stop polling when done
-  useEffect(() => {
-    if (isDone && intervalRef.current) {
-      clearInterval(intervalRef.current);
-      intervalRef.current = null;
+    // Fetch final state (only if not cancelled by user — cancel does its own fetch)
+    if (!cancelledRef.current) {
+      await fetchFullStatus();
     }
-  }, [isDone]);
+  }, [dispatchId, fetchFullStatus, startMessagePolling, stopMessagePolling]);
 
-  // --- Control Actions ---
+  // ---- Initial Load ----
+  useEffect(() => {
+    let cancelled = false;
+
+    async function init() {
+      const s = await fetchFullStatus();
+      setLoading(false);
+
+      if (cancelled) return;
+
+      // Auto-start send loop ONLY for active dispatches with pending messages
+      if (
+        s &&
+        ['pending', 'scheduled', 'running'].includes(s.status) &&
+        s.pending_count > 0
+      ) {
+        sendLoop();
+      }
+    }
+
+    init();
+
+    return () => {
+      cancelled = true;
+      abortRef.current = true;
+      stopMessagePolling();
+    };
+  }, [fetchFullStatus, sendLoop, stopMessagePolling]);
+
+  // ---- Control Actions ----
   const handlePause = async () => {
-    userActionRef.current = true;
+    abortRef.current = true; // Stop the send loop IMMEDIATELY
     setActionLoading("pause");
     setActionError(null);
     try {
       await api.pauseDispatch(dispatchId);
-      setStatus((prev) => prev ? { ...prev, status: "paused" } : prev);
-      // Delayed fetch so optimistic update isn't overwritten
-      setTimeout(() => fetchData(), 2000);
+      setStatus((prev) => (prev ? { ...prev, status: "paused" } : prev));
+      setTimeout(() => fetchFullStatus(), 1000);
     } catch (err: any) {
       setActionError(`Falha ao pausar: ${err.message}`);
     } finally {
@@ -153,48 +234,79 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   };
 
   const handleCancel = async () => {
-    if (!window.confirm("Cancelar este disparo? Mensagens pendentes nao serao enviadas.")) return;
-    userActionRef.current = true;
+    if (
+      !window.confirm(
+        "Cancelar este disparo? Mensagens pendentes nao serao enviadas."
+      )
+    )
+      return;
+
+    // Stop the send loop IMMEDIATELY and prevent restart
+    abortRef.current = true;
+    cancelledRef.current = true;
     setActionLoading("cancel");
     setActionError(null);
     try {
       await api.cancelDispatch(dispatchId);
-      // Optimistic update — show cancelled immediately
-      setStatus((prev) => prev ? { ...prev, status: "cancelled", pending_count: 0 } : prev);
-      // Stop polling — don't fetchData (would overwrite optimistic update)
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current);
-        intervalRef.current = null;
-      }
-      // Delayed fetch to sync final counts from DB
+      // Optimistic update
+      setStatus((prev) =>
+        prev ? { ...prev, status: "cancelled", pending_count: 0 } : prev
+      );
+      // Sync final state after DB settles
       setTimeout(async () => {
-        try {
-          const [s, m] = await Promise.all([
-            api.getDispatchStatus(dispatchId),
-            api.getDispatchMessages(dispatchId),
-          ]);
-          setStatus(s);
-          setMessages(m);
-        } catch {}
-      }, 2000);
+        const s = await fetchFullStatus();
+        // If somehow status isn't cancelled, force it
+        if (s && s.status !== "cancelled") {
+          try {
+            await api.cancelDispatch(dispatchId);
+            await fetchFullStatus();
+          } catch {}
+        }
+      }, 1500);
     } catch (err: any) {
       setActionError(`Falha ao cancelar: ${err.message}`);
+      cancelledRef.current = false; // Allow retry
     } finally {
       setActionLoading(null);
     }
   };
 
   const handleResume = async () => {
-    userActionRef.current = false;
     setActionLoading("resume");
     setActionError(null);
     try {
       await api.resumeDispatch(dispatchId);
-      setStatus((prev) => prev ? { ...prev, status: "running" } : prev);
-      triggerStart();
-      await fetchData();
+      setStatus((prev) => (prev ? { ...prev, status: "running" } : prev));
+      // Reset cancel flag and restart loop
+      cancelledRef.current = false;
+      abortRef.current = false;
+      sendLoop();
     } catch (err: any) {
       setActionError(`Falha ao retomar: ${err.message}`);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (
+      !window.confirm(
+        "Excluir este disparo permanentemente? Esta acao nao pode ser desfeita."
+      )
+    )
+      return;
+
+    abortRef.current = true;
+    cancelledRef.current = true;
+    setActionLoading("delete");
+    setActionError(null);
+    try {
+      await api.deleteDispatch(dispatchId);
+      // Navigate back
+      if (onBack) onBack();
+    } catch (err: any) {
+      setActionError(`Falha ao excluir: ${err.message}`);
+      cancelledRef.current = false;
     } finally {
       setActionLoading(null);
     }
@@ -227,7 +339,10 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   const statusLabel: Record<
     string,
-    { text: string; variant: "default" | "secondary" | "destructive" | "outline" }
+    {
+      text: string;
+      variant: "default" | "secondary" | "destructive" | "outline";
+    }
   > = {
     pending: { text: "Pendente", variant: "secondary" },
     running: { text: "Enviando...", variant: "default" },
@@ -253,10 +368,12 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-lg">Monitoramento do Disparo</CardTitle>
+            <CardTitle className="text-lg">
+              Monitoramento do Disparo
+            </CardTitle>
             <div className="flex items-center gap-2">
               <Badge variant={current.variant}>{current.text}</Badge>
-              {!isDone && !isPaused && (
+              {sending && !isDone && !isPaused && (
                 <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
               )}
             </div>
@@ -324,53 +441,70 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
           )}
 
           {/* Control buttons */}
-          {!isDone && (
-            <div className="flex items-center gap-2 pt-2 border-t">
-              {isRunning && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handlePause}
-                  disabled={!!actionLoading}
-                >
-                  {actionLoading === "pause" ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Pause className="mr-2 h-4 w-4" />
-                  )}
-                  Pausar
-                </Button>
-              )}
-              {isPaused && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleResume}
-                  disabled={!!actionLoading}
-                >
-                  {actionLoading === "resume" ? (
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  ) : (
-                    <Play className="mr-2 h-4 w-4" />
-                  )}
-                  Retomar
-                </Button>
-              )}
-              <Button
-                variant="destructive"
-                size="sm"
-                onClick={handleCancel}
-                disabled={!!actionLoading}
-              >
-                {actionLoading === "cancel" ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : (
-                  <Ban className="mr-2 h-4 w-4" />
+          <div className="flex items-center gap-2 pt-2 border-t">
+            {!isDone && (
+              <>
+                {(isRunning || sending) && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handlePause}
+                    disabled={!!actionLoading}
+                  >
+                    {actionLoading === "pause" ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Pause className="mr-2 h-4 w-4" />
+                    )}
+                    Pausar
+                  </Button>
                 )}
-                Cancelar Disparo
-              </Button>
-            </div>
-          )}
+                {isPaused && !sending && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleResume}
+                    disabled={!!actionLoading}
+                  >
+                    {actionLoading === "resume" ? (
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    ) : (
+                      <Play className="mr-2 h-4 w-4" />
+                    )}
+                    Retomar
+                  </Button>
+                )}
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleCancel}
+                  disabled={!!actionLoading}
+                >
+                  {actionLoading === "cancel" ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  ) : (
+                    <Ban className="mr-2 h-4 w-4" />
+                  )}
+                  Cancelar Disparo
+                </Button>
+              </>
+            )}
+            {/* Delete button — always visible */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDelete}
+              disabled={!!actionLoading}
+              className="ml-auto text-destructive hover:text-destructive hover:bg-destructive/10"
+            >
+              {actionLoading === "delete" ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <Trash2 className="mr-2 h-4 w-4" />
+              )}
+              Excluir
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -379,7 +513,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
         <CardHeader>
           <div className="flex items-center justify-between">
             <CardTitle className="text-base">Log de Mensagens</CardTitle>
-            <Button variant="ghost" size="sm" onClick={fetchData}>
+            <Button variant="ghost" size="sm" onClick={fetchMessages}>
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>

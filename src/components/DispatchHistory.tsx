@@ -8,7 +8,7 @@ import { useAccount } from "@/components/AccountProvider";
 import { getSupabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import { formatUsd } from "@/lib/costs";
-import { RefreshCw, RotateCcw, Clock, Loader2 } from "lucide-react";
+import { RefreshCw, RotateCcw, Clock, Loader2, Trash2 } from "lucide-react";
 import type { DispatchRecord } from "@/types";
 
 export default function DispatchHistory() {
@@ -16,6 +16,7 @@ export default function DispatchHistory() {
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<string | null>(null);
 
   const loadDispatches = async () => {
     setLoading(true);
@@ -49,6 +50,18 @@ export default function DispatchHistory() {
       alert(`Erro ao criar retry: ${err.message}`);
     }
     setRetrying(null);
+  };
+
+  const handleDelete = async (dispatchId: string) => {
+    if (!window.confirm("Excluir este disparo permanentemente?")) return;
+    setDeleting(dispatchId);
+    try {
+      await api.deleteDispatch(dispatchId);
+      setDispatches((prev) => prev.filter((d) => d.id !== dispatchId));
+    } catch (err: any) {
+      alert(`Erro ao excluir: ${err.message}`);
+    }
+    setDeleting(null);
   };
 
   const statusColor = (status: string) => {
@@ -122,21 +135,37 @@ export default function DispatchHistory() {
                   <p className="text-xs text-muted-foreground">
                     {new Date(d.created_at).toLocaleString("pt-BR")}
                   </p>
-                  {d.error_count > 0 && (d.status === "completed" || d.status === "cancelled") && (
+                  <div className="flex items-center gap-2">
+                    {d.error_count > 0 && (d.status === "completed" || d.status === "cancelled") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => handleRetry(d.id)}
+                        disabled={retrying === d.id}
+                      >
+                        {retrying === d.id ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                        )}
+                        Retry ({d.error_count})
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => handleRetry(d.id)}
-                      disabled={retrying === d.id}
+                      onClick={() => handleDelete(d.id)}
+                      disabled={deleting === d.id}
+                      className="text-destructive hover:text-destructive hover:bg-destructive/10"
                     >
-                      {retrying === d.id ? (
+                      {deleting === d.id ? (
                         <Loader2 className="h-3 w-3 mr-1 animate-spin" />
                       ) : (
-                        <RotateCcw className="h-3 w-3 mr-1" />
+                        <Trash2 className="h-3 w-3 mr-1" />
                       )}
-                      Retry ({d.error_count})
+                      Excluir
                     </Button>
-                  )}
+                  </div>
                 </div>
               </div>
             ))}

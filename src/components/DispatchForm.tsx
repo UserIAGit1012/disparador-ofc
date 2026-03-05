@@ -41,6 +41,8 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
   const [openConversation, setOpenConversation] = useState(false);
   const [assignAgentId, setAssignAgentId] = useState<number | null>(null);
   const [agents, setAgents] = useState<{ id: number; name: string; availability_status: string }[]>([]);
+  const [postSendLabels, setPostSendLabels] = useState<string[]>([]);
+  const [availableLabels, setAvailableLabels] = useState<{ id: number; title: string; color?: string }[]>([]);
 
   const [blacklistFiltered, setBlacklistFiltered] = useState(0);
   const [blacklistTotal, setBlacklistTotal] = useState(0);
@@ -49,6 +51,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
   useEffect(() => {
     if (!accountId) return;
     api.getAgents(accountId).then(setAgents).catch(() => setAgents([]));
+    api.getLabels(accountId).then(setAvailableLabels).catch(() => setAvailableLabels([]));
   }, [accountId]);
 
   const handleInboxChange = (id: number) => {
@@ -200,6 +203,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
         delay_max: delayMax,
         open_conversation: openConversation,
         assign_agent_id: assignAgentId,
+        post_send_labels: postSendLabels.length > 0 ? postSendLabels : null,
         template_config: {
           ...templatePayloadBase,
           processedParams: buildProcessedParams({}),
@@ -357,6 +361,9 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
             assignAgentId={assignAgentId}
             onAssignAgentChange={setAssignAgentId}
             agents={agents}
+            postSendLabels={postSendLabels}
+            onPostSendLabelsChange={setPostSendLabels}
+            availableLabels={availableLabels}
           />
 
           <Separator />

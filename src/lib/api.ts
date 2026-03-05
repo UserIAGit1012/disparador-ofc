@@ -71,6 +71,21 @@ export const api = {
       { method: 'POST' }
     ),
 
+  sendNext: (dispatchId: string) =>
+    request<{
+      done: boolean;
+      reason?: string;
+      waiting?: boolean;
+      sent?: boolean;
+      error?: boolean;
+      remaining: number;
+      sent_count: number;
+      error_count: number;
+      total: number;
+      delay_min: number;
+      delay_max: number;
+    }>(`/dispatches/${dispatchId}/send-next`, { method: 'POST' }),
+
   getDispatchStatus: (dispatchId: string) =>
     request<{
       id: string;
@@ -101,6 +116,12 @@ export const api = {
     request<{ success: boolean; status: string }>(
       `/dispatches/${dispatchId}/cancel`,
       { method: 'POST', body: JSON.stringify({ action: 'resume' }) }
+    ),
+
+  deleteDispatch: (dispatchId: string) =>
+    request<{ success: boolean; deleted: string }>(
+      `/dispatches/${dispatchId}`,
+      { method: 'DELETE' }
     ),
 
   getDashboardStats: (accountId: number, month?: string) => {
