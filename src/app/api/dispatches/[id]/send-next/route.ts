@@ -272,7 +272,7 @@ export async function POST(
             `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}`
           );
           const currentLabels: string[] = convData?.labels || [];
-          const merged = [...new Set([...currentLabels, ...dispatch.post_send_labels])];
+          const merged = Array.from(new Set([...currentLabels, ...dispatch.post_send_labels]));
           await chatwootPost(
             `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/labels`,
             { labels: merged }
