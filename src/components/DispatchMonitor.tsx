@@ -276,7 +276,8 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     setActionError(null);
     try {
       await api.resumeDispatch(dispatchId);
-      setStatus((prev) => (prev ? { ...prev, status: "running" } : prev));
+      // Fetch real counts from server before restarting loop (prevents counter reset)
+      await fetchFullStatus();
       // Reset cancel flag and restart loop
       cancelledRef.current = false;
       abortRef.current = false;
@@ -529,33 +530,35 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                 messages.map((msg) => (
                   <div
                     key={msg.id}
-                    className="flex items-center gap-2 text-xs font-mono py-1 px-2 rounded hover:bg-muted/50"
+                    className="text-xs font-mono py-1 px-2 rounded hover:bg-muted/50"
                   >
-                    {msg.status === "sent" ? (
-                      <CheckCircle2 className="h-3 w-3 text-green-600 shrink-0" />
-                    ) : msg.status === "error" ? (
-                      <XCircle className="h-3 w-3 text-destructive shrink-0" />
-                    ) : msg.status === "cancelled" ? (
-                      <Ban className="h-3 w-3 text-muted-foreground shrink-0" />
-                    ) : (
-                      <Clock className="h-3 w-3 text-yellow-600 shrink-0" />
-                    )}
-                    <span className="truncate flex-1">
-                      {msg.contact_name || `Conv #${msg.conversation_id}`}
-                      {msg.contact_phone && ` (${msg.contact_phone})`}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      {msg.status === "sent" ? (
+                        <CheckCircle2 className="h-3 w-3 text-green-600 shrink-0" />
+                      ) : msg.status === "error" ? (
+                        <XCircle className="h-3 w-3 text-destructive shrink-0" />
+                      ) : msg.status === "cancelled" ? (
+                        <Ban className="h-3 w-3 text-muted-foreground shrink-0" />
+                      ) : (
+                        <Clock className="h-3 w-3 text-yellow-600 shrink-0" />
+                      )}
+                      <span className="truncate flex-1">
+                        {msg.contact_name || `Conv #${msg.conversation_id}`}
+                        {msg.contact_phone && ` (${msg.contact_phone})`}
+                      </span>
+                      {msg.status === "cancelled" && (
+                        <span className="text-muted-foreground">cancelado</span>
+                      )}
+                      {msg.sent_at && (
+                        <span className="text-muted-foreground shrink-0">
+                          {new Date(msg.sent_at).toLocaleTimeString("pt-BR")}
+                        </span>
+                      )}
+                    </div>
                     {msg.status === "error" && msg.error_message && (
-                      <span className="text-destructive truncate max-w-[200px]">
+                      <div className="mt-1 ml-5 text-destructive bg-destructive/5 rounded px-2 py-1 break-words whitespace-pre-wrap">
                         {msg.error_message}
-                      </span>
-                    )}
-                    {msg.status === "cancelled" && (
-                      <span className="text-muted-foreground">cancelado</span>
-                    )}
-                    {msg.sent_at && (
-                      <span className="text-muted-foreground shrink-0">
-                        {new Date(msg.sent_at).toLocaleTimeString("pt-BR")}
-                      </span>
+                      </div>
                     )}
                   </div>
                 ))

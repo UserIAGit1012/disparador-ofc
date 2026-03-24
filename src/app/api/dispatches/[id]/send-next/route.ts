@@ -221,8 +221,8 @@ export async function POST(
 
     const msg = claimed[0];
     const templateConfig = dispatch.template_config || {};
-    let sentCount = dispatch.sent_count || 0;
-    let errorCount = dispatch.error_count || 0;
+    let sentCount = 0;
+    let errorCount = 0;
     let sentOk = false;
     let hadError = false;
 
@@ -291,22 +291,30 @@ export async function POST(
         }).eq('id', msg.id);
       } catch { /* columns may not exist */ }
 
-      sentCount++;
       sentOk = true;
     } catch (err: any) {
-      // Mark as error
-      await sb.from('dispatch_messages').update({ status: 'error' }).eq('id', msg.id);
-      try {
-        await sb.from('dispatch_messages').update({
-          error_message: err.message?.substring(0, 500) || 'Unknown error',
-        }).eq('id', msg.id);
-      } catch { /* column may not exist */ }
+      // Build detailed error message for debugging
+      const errorDetail = err.message?.substring(0, 500) || 'Unknown error';
+      console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id} (conv ${msg.conversation_id}):`, errorDetail);
 
-      errorCount++;
+      // Mark as error with detailed message
+      await sb.from('dispatch_messages').update({
+        status: 'error',
+        error_message: errorDetail,
+      }).eq('id', msg.id);
+
       hadError = true;
     }
 
-    // 8. Update dispatch counts
+    // 8. Calculate real counts from dispatch_messages (prevents counter desync on pause/resume)
+    const { data: countMsgs } = await sb
+      .from('dispatch_messages')
+      .select('status')
+      .eq('dispatch_id', dispatchId);
+
+    sentCount = (countMsgs || []).filter((m: any) => m.status === 'sent').length;
+    errorCount = (countMsgs || []).filter((m: any) => m.status === 'error').length;
+
     await sb.from('dispatches').update({
       sent_count: sentCount,
       error_count: errorCount,

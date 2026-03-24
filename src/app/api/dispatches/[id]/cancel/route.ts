@@ -29,8 +29,19 @@ export async function POST(
     }
 
     if (action === 'pause') {
+      // Recalculate real counts from messages before pausing (prevents counter desync)
+      const { data: msgs } = await sb
+        .from('dispatch_messages')
+        .select('status')
+        .eq('dispatch_id', dispatchId);
+
+      const sentCount = (msgs || []).filter((m: any) => m.status === 'sent').length;
+      const errorCount = (msgs || []).filter((m: any) => m.status === 'error').length;
+
       const { error: updateErr } = await sb.from('dispatches').update({
         status: 'paused',
+        sent_count: sentCount,
+        error_count: errorCount,
         updated_at: new Date().toISOString(),
       }).eq('id', dispatchId);
 
@@ -95,8 +106,19 @@ export async function POST(
     }
 
     if (action === 'resume') {
+      // Recalculate real counts from messages before resuming (prevents counter desync)
+      const { data: msgs } = await sb
+        .from('dispatch_messages')
+        .select('status')
+        .eq('dispatch_id', dispatchId);
+
+      const sentCount = (msgs || []).filter((m: any) => m.status === 'sent').length;
+      const errorCount = (msgs || []).filter((m: any) => m.status === 'error').length;
+
       const { error: updateErr } = await sb.from('dispatches').update({
         status: 'running',
+        sent_count: sentCount,
+        error_count: errorCount,
         updated_at: new Date().toISOString(),
       }).eq('id', dispatchId);
 
