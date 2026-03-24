@@ -46,7 +46,9 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
       const pagination = data.pagination || {};
 
       for (const item of items) {
-        const convId = item.item_details?.conversation_id || item.conversation_display_id;
+        // Prioritize conversation_display_id (used by Chatwoot API in URLs)
+        // item_details.conversation_id may be an internal ID that causes 404
+        const convId = item.conversation_display_id || item.item_details?.conversation_id;
         if (!convId) continue;
 
         allItems.push({

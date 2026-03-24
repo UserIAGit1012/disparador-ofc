@@ -234,20 +234,20 @@ export async function POST(
     const messageContent = buildMessageContent(templateConfig, contact);
 
     // 5. Send via Chatwoot API
+    const chatwootPath = `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/messages`;
+    const chatwootBody = {
+      content: messageContent,
+      message_type: 'outgoing',
+      template_params: {
+        name: msg.template_name,
+        language: templateConfig.language || 'pt_BR',
+        category: msg.template_category || 'MARKETING',
+        processed_params: processedParams,
+      },
+    };
+
     try {
-      await chatwootPost(
-        `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/messages`,
-        {
-          content: messageContent,
-          message_type: 'outgoing',
-          template_params: {
-            name: msg.template_name,
-            language: templateConfig.language || 'pt_BR',
-            category: msg.template_category || 'MARKETING',
-            processed_params: processedParams,
-          },
-        }
-      );
+      await chatwootPost(chatwootPath, chatwootBody);
 
       // 6. Post-send actions (non-blocking)
       if (dispatch.open_conversation) {
@@ -293,9 +293,10 @@ export async function POST(
 
       sentOk = true;
     } catch (err: any) {
-      // Build detailed error message for debugging
-      const errorDetail = err.message?.substring(0, 500) || 'Unknown error';
-      console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id} (conv ${msg.conversation_id}):`, errorDetail);
+      // Build detailed error message for debugging — include URL and key info
+      const rawError = err.message || 'Unknown error';
+      const errorDetail = `${rawError} | URL: ${chatwootPath} | account: ${dispatch.account_id} | conv: ${msg.conversation_id} | template: ${msg.template_name}`.substring(0, 500);
+      console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id}:`, errorDetail);
 
       // Mark as error first (status update must succeed even if error_message column doesn't exist)
       await sb.from('dispatch_messages').update({ status: 'error' }).eq('id', msg.id);
