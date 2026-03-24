@@ -54,6 +54,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [sendLoopErrors, setSendLoopErrors] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
 
   const abortRef = useRef(false);
@@ -114,6 +115,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
     sendLoopRunningRef.current = true;
     setSending(true);
+    setSendLoopErrors([]);
     abortRef.current = false;
 
     // NOTE: No resumeDispatch() call here!
@@ -169,8 +171,17 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
         console.error("sendNext error:", err);
         consecutiveErrors++;
 
+        const timestamp = new Date().toLocaleTimeString("pt-BR");
+        const errorMsg = `[${timestamp}] Erro #${consecutiveErrors}: ${err.message || 'Erro desconhecido'}`;
+        setSendLoopErrors((prev) => [...prev.slice(-9), errorMsg]);
+
         if (consecutiveErrors >= 3) {
-          console.error("Too many consecutive errors, stopping send loop");
+          setSendLoopErrors((prev) => [
+            ...prev,
+            `[${timestamp}] Loop parado apos ${consecutiveErrors} erros consecutivos. Verifique a conexao e tente retomar.`,
+          ]);
+          // Fetch messages to show any per-message errors
+          await fetchMessages();
           break;
         }
 
@@ -186,7 +197,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     if (!cancelledRef.current) {
       await fetchFullStatus();
     }
-  }, [dispatchId, fetchFullStatus, startMessagePolling, stopMessagePolling]);
+  }, [dispatchId, fetchFullStatus, fetchMessages, startMessagePolling, stopMessagePolling]);
 
   // ---- Initial Load ----
   useEffect(() => {
@@ -434,10 +445,22 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
             )}
           </div>
 
-          {/* Error message */}
+          {/* Action error message */}
           {actionError && (
             <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 text-sm text-destructive">
               {actionError}
+            </div>
+          )}
+
+          {/* Send loop errors */}
+          {sendLoopErrors.length > 0 && (
+            <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/20 space-y-1">
+              <p className="text-sm font-medium text-destructive">Erros no envio:</p>
+              {sendLoopErrors.map((err, i) => (
+                <p key={i} className="text-xs text-destructive/90 font-mono break-words whitespace-pre-wrap">
+                  {err}
+                </p>
+              ))}
             </div>
           )}
 

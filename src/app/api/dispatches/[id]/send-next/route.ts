@@ -297,11 +297,13 @@ export async function POST(
       const errorDetail = err.message?.substring(0, 500) || 'Unknown error';
       console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id} (conv ${msg.conversation_id}):`, errorDetail);
 
-      // Mark as error with detailed message
-      await sb.from('dispatch_messages').update({
-        status: 'error',
-        error_message: errorDetail,
-      }).eq('id', msg.id);
+      // Mark as error first (status update must succeed even if error_message column doesn't exist)
+      await sb.from('dispatch_messages').update({ status: 'error' }).eq('id', msg.id);
+      try {
+        await sb.from('dispatch_messages').update({
+          error_message: errorDetail,
+        }).eq('id', msg.id);
+      } catch { /* error_message column may not exist yet */ }
 
       hadError = true;
     }
