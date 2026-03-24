@@ -84,6 +84,17 @@ export const api = {
       total: number;
       delay_min: number;
       delay_max: number;
+      message?: {
+        id: string;
+        dispatch_id: string;
+        conversation_id: number;
+        contact_name?: string;
+        contact_phone?: string;
+        template_name: string;
+        status: string;
+        error_message?: string | null;
+        sent_at?: string | null;
+      };
     }>(`/dispatches/${dispatchId}/send-next`, { method: 'POST' }),
 
   getDispatchStatus: (dispatchId: string) =>

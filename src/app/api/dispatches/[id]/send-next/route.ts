@@ -281,17 +281,21 @@ export async function POST(
       }
 
       // 7. Mark as sent
+      const sentAt = new Date().toISOString();
       await sb.from('dispatch_messages').update({ status: 'sent' }).eq('id', msg.id);
 
       const cost = getMessageCostUsd(msg.template_category || 'MARKETING');
       try {
         await sb.from('dispatch_messages').update({
-          sent_at: new Date().toISOString(),
+          sent_at: sentAt,
           cost_usd: cost,
         }).eq('id', msg.id);
       } catch { /* columns may not exist */ }
 
       sentOk = true;
+      // Attach processed message info for real-time UI update
+      msg._status = 'sent';
+      msg._sent_at = sentAt;
     } catch (err: any) {
       // Build detailed error message for debugging — include URL and key info
       const rawError = err.message || 'Unknown error';
@@ -307,6 +311,8 @@ export async function POST(
       } catch { /* error_message column may not exist yet */ }
 
       hadError = true;
+      msg._status = 'error';
+      msg._error_message = errorDetail;
     }
 
     // 8. Calculate real counts from dispatch_messages (prevents counter desync on pause/resume)
@@ -356,6 +362,18 @@ export async function POST(
       total: dispatch.total_conversations || 0,
       delay_min: dispatch.delay_min || 5,
       delay_max: dispatch.delay_max || 15,
+      // Processed message for real-time log update
+      message: {
+        id: msg.id,
+        dispatch_id: msg.dispatch_id,
+        conversation_id: msg.conversation_id,
+        contact_name: msg.contact_name,
+        contact_phone: msg.contact_phone,
+        template_name: msg.template_name,
+        status: msg._status || (sentOk ? 'sent' : 'error'),
+        error_message: msg._error_message || null,
+        sent_at: msg._sent_at || null,
+      },
     });
   } catch (error: any) {
     return NextResponse.json({ error: error.message }, { status: 500 });

@@ -154,6 +154,43 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
           };
         });
 
+        // Update message log in real-time
+        if (result.message) {
+          const processedMsg = result.message;
+          setMessages((prev) => {
+            const exists = prev.find((m) => m.id === processedMsg.id);
+            if (exists) {
+              // Update existing message status
+              return prev.map((m) =>
+                m.id === processedMsg.id
+                  ? {
+                      ...m,
+                      status: processedMsg.status,
+                      error_message: processedMsg.error_message || undefined,
+                      sent_at: processedMsg.sent_at || undefined,
+                    }
+                  : m
+              );
+            }
+            // Add new message to list
+            return [
+              ...prev,
+              {
+                id: processedMsg.id,
+                dispatch_id: processedMsg.dispatch_id,
+                conversation_id: processedMsg.conversation_id,
+                contact_name: processedMsg.contact_name,
+                contact_phone: processedMsg.contact_phone,
+                template_name: processedMsg.template_name,
+                status: processedMsg.status,
+                error_message: processedMsg.error_message || undefined,
+                sent_at: processedMsg.sent_at || undefined,
+                created_at: '',
+              },
+            ];
+          });
+        }
+
         consecutiveErrors = 0;
 
         if (result.done) break;
