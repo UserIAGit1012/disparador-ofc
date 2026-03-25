@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
 import { formatUsd, formatBrl, usdToBrl } from "@/lib/costs";
+import { getSupabase } from "@/lib/supabase";
 import {
   ArrowLeft,
   RefreshCw,
@@ -19,6 +20,10 @@ import {
   Play,
   Ban,
   Trash2,
+  Radio,
+  Filter,
+  Send,
+  AlertTriangle,
 } from "lucide-react";
 import type { DispatchMessage } from "@/types";
 
@@ -40,6 +45,8 @@ interface DispatchStatus {
   updated_at: string;
 }
 
+type LogFilter = "all" | "sent" | "error" | "pending" | "sending";
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -56,17 +63,132 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [sendLoopErrors, setSendLoopErrors] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [logFilter, setLogFilter] = useState<LogFilter>("all");
+  const [autoScroll, setAutoScroll] = useState(true);
 
   const abortRef = useRef(false);
   const sendLoopRunningRef = useRef(false);
   const messagesIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Track if cancel was requested — prevents sendLoop from restarting
   const cancelledRef = useRef(false);
+  const logEndRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const isDone =
     status?.status === "completed" || status?.status === "cancelled";
   const isPaused = status?.status === "paused";
   const isRunning = status?.status === "running";
+
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (autoScroll && logEndRef.current) {
+      logEndRef.current.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, autoScroll]);
+
+  // Detect manual scroll to disable auto-scroll
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
+    setAutoScroll(isAtBottom);
+  }, []);
+
+  // ---- Supabase Realtime Subscription ----
+  useEffect(() => {
+    const supabase = getSupabase();
+    if (!supabase) return;
+
+    // Subscribe to dispatch_messages changes for this dispatch
+    const messagesChannel = supabase
+      .channel(`dispatch-messages-${dispatchId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "dispatch_messages",
+          filter: `dispatch_id=eq.${dispatchId}`,
+        },
+        (payload) => {
+          const newRecord = payload.new as any;
+          if (!newRecord || !newRecord.id) return;
+
+          setMessages((prev) => {
+            const idx = prev.findIndex((m) => m.id === newRecord.id);
+            const updated: DispatchMessage = {
+              id: newRecord.id,
+              dispatch_id: newRecord.dispatch_id,
+              conversation_id: newRecord.conversation_id,
+              contact_name: newRecord.contact_name,
+              contact_phone: newRecord.contact_phone,
+              template_name: newRecord.template_name,
+              template_category: newRecord.template_category,
+              status: newRecord.status,
+              error_message: newRecord.error_message || undefined,
+              cost_usd: newRecord.cost_usd ? parseFloat(newRecord.cost_usd) : undefined,
+              sent_at: newRecord.sent_at || undefined,
+              created_at: newRecord.created_at || "",
+            };
+
+            if (idx >= 0) {
+              // Update existing message
+              const next = [...prev];
+              next[idx] = updated;
+              return next;
+            }
+            // New message (INSERT event)
+            return [...prev, updated];
+          });
+
+          // Update counts from realtime message status changes
+          if (newRecord.status === "sent" || newRecord.status === "error") {
+            setStatus((prev) => {
+              if (!prev) return prev;
+              // Recalculate from messages for accuracy
+              return prev; // Let the send loop handle counts; this prevents race conditions
+            });
+          }
+        }
+      )
+      .subscribe((status) => {
+        setRealtimeConnected(status === "SUBSCRIBED");
+      });
+
+    // Subscribe to dispatch status changes
+    const dispatchChannel = supabase
+      .channel(`dispatch-status-${dispatchId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "dispatches",
+          filter: `id=eq.${dispatchId}`,
+        },
+        (payload) => {
+          const newRecord = payload.new as any;
+          if (!newRecord) return;
+
+          setStatus((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              status: newRecord.status || prev.status,
+              sent_count: newRecord.sent_count ?? prev.sent_count,
+              error_count: newRecord.error_count ?? prev.error_count,
+              estimated_cost_usd: newRecord.estimated_cost_usd ?? prev.estimated_cost_usd,
+              updated_at: newRecord.updated_at || prev.updated_at,
+            };
+          });
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(messagesChannel);
+      supabase.removeChannel(dispatchChannel);
+    };
+  }, [dispatchId]);
 
   // Fetch full status + messages (for initial load and final sync)
   const fetchFullStatus = useCallback(async () => {
@@ -84,7 +206,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     }
   }, [dispatchId]);
 
-  // Fetch only messages (for periodic log refresh during send loop)
+  // Fetch only messages (fallback polling when realtime not connected)
   const fetchMessages = useCallback(async () => {
     try {
       const m = await api.getDispatchMessages(dispatchId);
@@ -94,13 +216,17 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     }
   }, [dispatchId]);
 
-  // Start periodic message log refresh
+  // Fallback polling only when realtime is NOT connected
   const startMessagePolling = useCallback(() => {
     if (messagesIntervalRef.current) return;
-    messagesIntervalRef.current = setInterval(fetchMessages, 5000);
-  }, [fetchMessages]);
+    // Only poll if realtime isn't working — 3s fallback
+    messagesIntervalRef.current = setInterval(() => {
+      if (!realtimeConnected) {
+        fetchMessages();
+      }
+    }, 3000);
+  }, [fetchMessages, realtimeConnected]);
 
-  // Stop periodic message log refresh
   const stopMessagePolling = useCallback(() => {
     if (messagesIntervalRef.current) {
       clearInterval(messagesIntervalRef.current);
@@ -111,15 +237,12 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   // ---- Browser-Driven Send Loop ----
   const sendLoop = useCallback(async () => {
     if (sendLoopRunningRef.current) return;
-    if (cancelledRef.current) return; // Don't start if already cancelled
+    if (cancelledRef.current) return;
 
     sendLoopRunningRef.current = true;
     setSending(true);
     setSendLoopErrors([]);
     abortRef.current = false;
-
-    // NOTE: No resumeDispatch() call here!
-    // The send-next endpoint handles pending→running transition atomically.
 
     startMessagePolling();
 
@@ -129,7 +252,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       try {
         const result = await api.sendNext(dispatchId);
 
-        // If abort was set during the API call, don't update status
         if (abortRef.current) break;
 
         // Update status from result immediately (real-time counts)
@@ -154,13 +276,12 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
           };
         });
 
-        // Update message log in real-time
+        // Update message log from API response (immediate, before Realtime delivers)
         if (result.message) {
           const processedMsg = result.message;
           setMessages((prev) => {
             const exists = prev.find((m) => m.id === processedMsg.id);
             if (exists) {
-              // Update existing message status
               return prev.map((m) =>
                 m.id === processedMsg.id
                   ? {
@@ -172,7 +293,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                   : m
               );
             }
-            // Add new message to list
             return [
               ...prev,
               {
@@ -200,7 +320,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
           continue;
         }
 
-        // Delay between messages (happens in the BROWSER, not server)
         const delay = randomDelay(result.delay_min, result.delay_max);
         await sleep(delay);
       } catch (err: any) {
@@ -217,7 +336,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
             ...prev,
             `[${timestamp}] Loop parado apos ${consecutiveErrors} erros consecutivos. Verifique a conexao e tente retomar.`,
           ]);
-          // Fetch messages to show any per-message errors
           await fetchMessages();
           break;
         }
@@ -230,7 +348,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     setSending(false);
     sendLoopRunningRef.current = false;
 
-    // Fetch final state (only if not cancelled by user — cancel does its own fetch)
     if (!cancelledRef.current) {
       await fetchFullStatus();
     }
@@ -246,7 +363,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
       if (cancelled) return;
 
-      // Auto-start send loop ONLY for active dispatches with pending messages
       if (
         s &&
         ['pending', 'scheduled', 'running'].includes(s.status) &&
@@ -267,7 +383,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
 
   // ---- Control Actions ----
   const handlePause = async () => {
-    abortRef.current = true; // Stop the send loop IMMEDIATELY
+    abortRef.current = true;
     setActionLoading("pause");
     setActionError(null);
     try {
@@ -289,21 +405,17 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     )
       return;
 
-    // Stop the send loop IMMEDIATELY and prevent restart
     abortRef.current = true;
     cancelledRef.current = true;
     setActionLoading("cancel");
     setActionError(null);
     try {
       await api.cancelDispatch(dispatchId);
-      // Optimistic update
       setStatus((prev) =>
         prev ? { ...prev, status: "cancelled", pending_count: 0 } : prev
       );
-      // Sync final state after DB settles
       setTimeout(async () => {
         const s = await fetchFullStatus();
-        // If somehow status isn't cancelled, force it
         if (s && s.status !== "cancelled") {
           try {
             await api.cancelDispatch(dispatchId);
@@ -313,7 +425,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
       }, 1500);
     } catch (err: any) {
       setActionError(`Falha ao cancelar: ${err.message}`);
-      cancelledRef.current = false; // Allow retry
+      cancelledRef.current = false;
     } finally {
       setActionLoading(null);
     }
@@ -324,9 +436,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     setActionError(null);
     try {
       await api.resumeDispatch(dispatchId);
-      // Fetch real counts from server before restarting loop (prevents counter reset)
       await fetchFullStatus();
-      // Reset cancel flag and restart loop
       cancelledRef.current = false;
       abortRef.current = false;
       sendLoop();
@@ -351,7 +461,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     setActionError(null);
     try {
       await api.deleteDispatch(dispatchId);
-      // Navigate back
       if (onBack) onBack();
     } catch (err: any) {
       setActionError(`Falha ao excluir: ${err.message}`);
@@ -359,6 +468,20 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
     } finally {
       setActionLoading(null);
     }
+  };
+
+  // ---- Filter messages ----
+  const filteredMessages = messages.filter((msg) => {
+    if (logFilter === "all") return true;
+    if (logFilter === "sending") return msg.status === "sending";
+    return msg.status === logFilter;
+  });
+
+  // Count by status for filter badges
+  const countByStatus = {
+    sent: messages.filter((m) => m.status === "sent").length,
+    error: messages.filter((m) => m.status === "error").length,
+    pending: messages.filter((m) => m.status === "pending" || m.status === "sending").length,
   };
 
   if (loading && !status) {
@@ -550,7 +673,6 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                 </Button>
               </>
             )}
-            {/* Delete button — always visible */}
             <Button
               variant="outline"
               size="sm"
@@ -569,62 +691,200 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
         </CardContent>
       </Card>
 
-      {/* Messages log */}
+      {/* Messages log — Real-time */}
       <Card>
-        <CardHeader>
+        <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
-            <CardTitle className="text-base">Log de Mensagens</CardTitle>
+            <div className="flex items-center gap-2">
+              <CardTitle className="text-base">Log de Mensagens</CardTitle>
+              {/* Realtime indicator */}
+              {realtimeConnected ? (
+                <span className="flex items-center gap-1 text-[10px] font-medium text-green-600 bg-green-500/10 px-2 py-0.5 rounded-full">
+                  <Radio className="h-3 w-3 animate-pulse" />
+                  LIVE
+                </span>
+              ) : (
+                <span className="flex items-center gap-1 text-[10px] font-medium text-yellow-600 bg-yellow-500/10 px-2 py-0.5 rounded-full">
+                  <Clock className="h-3 w-3" />
+                  POLLING
+                </span>
+              )}
+            </div>
             <Button variant="ghost" size="sm" onClick={fetchMessages}>
               <RefreshCw className="h-4 w-4" />
             </Button>
           </div>
+
+          {/* Filter buttons */}
+          <div className="flex items-center gap-1.5 mt-2">
+            <Button
+              variant={logFilter === "all" ? "default" : "outline"}
+              size="sm"
+              className="h-7 text-xs px-2.5"
+              onClick={() => setLogFilter("all")}
+            >
+              <Filter className="h-3 w-3 mr-1" />
+              Todos ({messages.length})
+            </Button>
+            <Button
+              variant={logFilter === "sent" ? "default" : "outline"}
+              size="sm"
+              className="h-7 text-xs px-2.5"
+              onClick={() => setLogFilter("sent")}
+            >
+              <CheckCircle2 className="h-3 w-3 mr-1 text-green-600" />
+              Enviados ({countByStatus.sent})
+            </Button>
+            <Button
+              variant={logFilter === "error" ? "default" : "outline"}
+              size="sm"
+              className="h-7 text-xs px-2.5"
+              onClick={() => setLogFilter("error")}
+            >
+              <XCircle className="h-3 w-3 mr-1 text-destructive" />
+              Erros ({countByStatus.error})
+            </Button>
+            <Button
+              variant={logFilter === "pending" ? "default" : "outline"}
+              size="sm"
+              className="h-7 text-xs px-2.5"
+              onClick={() => setLogFilter("pending")}
+            >
+              <Clock className="h-3 w-3 mr-1 text-yellow-600" />
+              Pendentes ({countByStatus.pending})
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
-          <ScrollArea className="h-64 rounded border bg-muted/30">
-            <div className="p-3 space-y-1">
-              {messages.length === 0 ? (
-                <p className="text-sm text-muted-foreground text-center py-4">
-                  Aguardando mensagens...
+          <div
+            className="h-80 rounded border bg-muted/30 overflow-y-auto"
+            ref={scrollContainerRef}
+            onScroll={handleScroll}
+          >
+            <div className="p-3 space-y-0.5">
+              {filteredMessages.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">
+                  {messages.length === 0
+                    ? "Aguardando mensagens..."
+                    : `Nenhuma mensagem com filtro "${logFilter}"`}
                 </p>
               ) : (
-                messages.map((msg) => (
+                filteredMessages.map((msg) => (
                   <div
                     key={msg.id}
-                    className="text-xs font-mono py-1 px-2 rounded hover:bg-muted/50"
+                    className={`text-xs font-mono py-1.5 px-2.5 rounded transition-colors ${
+                      msg.status === "sent"
+                        ? "bg-green-500/5 hover:bg-green-500/10 border-l-2 border-green-500"
+                        : msg.status === "error"
+                        ? "bg-destructive/5 hover:bg-destructive/10 border-l-2 border-destructive"
+                        : msg.status === "sending"
+                        ? "bg-blue-500/5 hover:bg-blue-500/10 border-l-2 border-blue-500"
+                        : msg.status === "cancelled"
+                        ? "bg-muted/30 hover:bg-muted/50 border-l-2 border-muted-foreground/30"
+                        : "hover:bg-muted/50 border-l-2 border-yellow-500/50"
+                    }`}
                   >
                     <div className="flex items-center gap-2">
+                      {/* Status icon */}
                       {msg.status === "sent" ? (
-                        <CheckCircle2 className="h-3 w-3 text-green-600 shrink-0" />
+                        <CheckCircle2 className="h-3.5 w-3.5 text-green-600 shrink-0" />
                       ) : msg.status === "error" ? (
-                        <XCircle className="h-3 w-3 text-destructive shrink-0" />
+                        <XCircle className="h-3.5 w-3.5 text-destructive shrink-0" />
+                      ) : msg.status === "sending" ? (
+                        <Send className="h-3.5 w-3.5 text-blue-500 shrink-0 animate-pulse" />
                       ) : msg.status === "cancelled" ? (
-                        <Ban className="h-3 w-3 text-muted-foreground shrink-0" />
+                        <Ban className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                       ) : (
-                        <Clock className="h-3 w-3 text-yellow-600 shrink-0" />
+                        <Clock className="h-3.5 w-3.5 text-yellow-600 shrink-0" />
                       )}
-                      <span className="truncate flex-1">
-                        {msg.contact_name || `Conv #${msg.conversation_id}`}
-                        {msg.contact_phone && ` (${msg.contact_phone})`}
+
+                      {/* Status badge */}
+                      <span
+                        className={`text-[10px] font-semibold uppercase px-1.5 py-0.5 rounded ${
+                          msg.status === "sent"
+                            ? "text-green-700 bg-green-500/15"
+                            : msg.status === "error"
+                            ? "text-destructive bg-destructive/10"
+                            : msg.status === "sending"
+                            ? "text-blue-600 bg-blue-500/15"
+                            : msg.status === "cancelled"
+                            ? "text-muted-foreground bg-muted"
+                            : "text-yellow-700 bg-yellow-500/15"
+                        }`}
+                      >
+                        {msg.status === "sent"
+                          ? "ENVIADO"
+                          : msg.status === "error"
+                          ? "ERRO"
+                          : msg.status === "sending"
+                          ? "ENVIANDO"
+                          : msg.status === "cancelled"
+                          ? "CANCELADO"
+                          : "PENDENTE"}
                       </span>
-                      {msg.status === "cancelled" && (
-                        <span className="text-muted-foreground">cancelado</span>
-                      )}
-                      {msg.sent_at && (
-                        <span className="text-muted-foreground shrink-0">
-                          {new Date(msg.sent_at).toLocaleTimeString("pt-BR")}
+
+                      {/* Contact info */}
+                      <span className="truncate flex-1 font-medium">
+                        {msg.contact_name || `Conv #${msg.conversation_id}`}
+                      </span>
+
+                      {/* Phone */}
+                      {msg.contact_phone && (
+                        <span className="text-muted-foreground text-[10px] shrink-0">
+                          {msg.contact_phone}
                         </span>
                       )}
+
+                      {/* Timestamp */}
+                      <span className="text-muted-foreground shrink-0 tabular-nums">
+                        {msg.sent_at
+                          ? new Date(msg.sent_at).toLocaleTimeString("pt-BR", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })
+                          : msg.created_at
+                          ? new Date(msg.created_at).toLocaleTimeString("pt-BR", {
+                              hour: "2-digit",
+                              minute: "2-digit",
+                              second: "2-digit",
+                            })
+                          : "--:--:--"}
+                      </span>
                     </div>
+
+                    {/* Error details */}
                     {msg.status === "error" && msg.error_message && (
-                      <div className="mt-1 ml-5 text-destructive bg-destructive/5 rounded px-2 py-1 break-words whitespace-pre-wrap">
-                        {msg.error_message}
+                      <div className="mt-1.5 ml-6 flex items-start gap-1.5">
+                        <AlertTriangle className="h-3 w-3 text-destructive shrink-0 mt-0.5" />
+                        <span className="text-destructive/90 bg-destructive/5 rounded px-2 py-1 break-words whitespace-pre-wrap text-[11px] leading-relaxed flex-1">
+                          {msg.error_message}
+                        </span>
                       </div>
                     )}
                   </div>
                 ))
               )}
+              <div ref={logEndRef} />
             </div>
-          </ScrollArea>
+          </div>
+
+          {/* Auto-scroll indicator */}
+          {!autoScroll && filteredMessages.length > 0 && (
+            <div className="flex justify-center mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 text-[10px] px-2"
+                onClick={() => {
+                  setAutoScroll(true);
+                  logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                }}
+              >
+                Ir para o final
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
