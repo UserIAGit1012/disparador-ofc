@@ -328,17 +328,18 @@ export async function POST(
         }
       }
 
-      // 7. Mark as sent
+      // 7. Mark as sent (single atomic update)
       const sentAt = new Date().toISOString();
-      await sb.from('dispatch_messages').update({ status: 'sent' }).eq('id', msg.id);
-
       const cost = getMessageCostUsd(msg.template_category || 'MARKETING');
-      try {
-        await sb.from('dispatch_messages').update({
-          sent_at: sentAt,
-          cost_usd: cost,
-        }).eq('id', msg.id);
-      } catch { /* columns may not exist */ }
+      const { error: updateErr } = await sb.from('dispatch_messages').update({
+        status: 'sent',
+        sent_at: sentAt,
+        cost_usd: cost,
+      }).eq('id', msg.id);
+
+      if (updateErr) {
+        console.error(`[dispatch:${dispatchId}] Falha ao marcar msg ${msg.id} como sent:`, updateErr.message);
+      }
 
       sentOk = true;
       msg._status = 'sent';
@@ -349,12 +350,10 @@ export async function POST(
       const errorDetail = `[${modeLabel}] ${rawError} | conv: ${msg.conversation_id} | phone: ${contact.phone || 'N/A'} | template: ${msg.template_name}`.substring(0, 500);
       console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id}:`, errorDetail);
 
-      await sb.from('dispatch_messages').update({ status: 'error' }).eq('id', msg.id);
-      try {
-        await sb.from('dispatch_messages').update({
-          error_message: errorDetail,
-        }).eq('id', msg.id);
-      } catch { /* error_message column may not exist yet */ }
+      await sb.from('dispatch_messages').update({
+        status: 'error',
+        error_message: errorDetail,
+      }).eq('id', msg.id);
 
       hadError = true;
       msg._status = 'error';

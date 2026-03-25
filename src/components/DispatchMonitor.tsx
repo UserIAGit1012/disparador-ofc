@@ -71,6 +71,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   const sendLoopRunningRef = useRef(false);
   const messagesIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const cancelledRef = useRef(false);
+  const realtimeConnectedRef = useRef(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -150,8 +151,10 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
           }
         }
       )
-      .subscribe((status) => {
-        setRealtimeConnected(status === "SUBSCRIBED");
+      .subscribe((st) => {
+        const connected = st === "SUBSCRIBED";
+        realtimeConnectedRef.current = connected;
+        setRealtimeConnected(connected);
       });
 
     // Subscribe to dispatch status changes
@@ -219,13 +222,13 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
   // Fallback polling only when realtime is NOT connected
   const startMessagePolling = useCallback(() => {
     if (messagesIntervalRef.current) return;
-    // Only poll if realtime isn't working — 3s fallback
+    // Only poll if realtime isn't working — 3s fallback (uses ref to avoid dep cascade)
     messagesIntervalRef.current = setInterval(() => {
-      if (!realtimeConnected) {
+      if (!realtimeConnectedRef.current) {
         fetchMessages();
       }
     }, 3000);
-  }, [fetchMessages, realtimeConnected]);
+  }, [fetchMessages]);
 
   const stopMessagePolling = useCallback(() => {
     if (messagesIntervalRef.current) {
