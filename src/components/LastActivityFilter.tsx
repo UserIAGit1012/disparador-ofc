@@ -10,7 +10,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Clock } from "lucide-react";
 
-export type ActivityFilterValue = "all" | ">24h" | "<24h" | ">48h" | ">7d";
+export type ActivityFilterValue = "all" | ">24h" | "<24h" | ">48h" | ">7d" | ">15d" | ">30d" | ">60d";
 
 interface Props {
   value: ActivityFilterValue;
@@ -23,6 +23,9 @@ const OPTIONS: { value: ActivityFilterValue; label: string }[] = [
   { value: "<24h", label: "Ativas < 24h" },
   { value: ">48h", label: "Inativas > 48h" },
   { value: ">7d", label: "Inativas > 7 dias" },
+  { value: ">15d", label: "Inativas > 15 dias" },
+  { value: ">30d", label: "Inativas > 30 dias" },
+  { value: ">60d", label: "Inativas > 60 dias" },
 ];
 
 // Parse last_activity_at which can be a Unix timestamp (number) or ISO string
@@ -57,6 +60,12 @@ export function filterByActivity<T extends { last_activity_at?: number | string 
         return diff > 48 * HOUR;
       case ">7d":
         return diff > 7 * 24 * HOUR;
+      case ">15d":
+        return diff > 15 * 24 * HOUR;
+      case ">30d":
+        return diff > 30 * 24 * HOUR;
+      case ">60d":
+        return diff > 60 * 24 * HOUR;
       default:
         return true;
     }
