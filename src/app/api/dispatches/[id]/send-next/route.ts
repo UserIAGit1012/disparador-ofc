@@ -236,6 +236,7 @@ export async function POST(
 
     // 5. Send message based on send_mode
     const isDirectWhatsApp = dispatch.send_mode === 'whatsapp_direct';
+    let externalId: string | null = null;
 
     try {
       if (isDirectWhatsApp) {
@@ -282,10 +283,12 @@ export async function POST(
         if (!result.success) {
           throw new Error(result.error || 'Falha no envio direto WhatsApp');
         }
+
+        externalId = result.messageId || null;
       } else {
         // --- CHATWOOT API (visible in Chatwoot) ---
         const chatwootPath = `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/messages`;
-        await chatwootPost(chatwootPath, {
+        const chatwootResult = await chatwootPost(chatwootPath, {
           content: messageContent,
           message_type: 'outgoing',
           template_params: {
@@ -295,6 +298,9 @@ export async function POST(
             processed_params: processedParams,
           },
         });
+
+        // Chatwoot returns the message object with source_id (wamid from WhatsApp)
+        externalId = chatwootResult?.source_id || chatwootResult?.id?.toString() || null;
 
         // Post-send actions (only for Chatwoot mode)
         if (dispatch.open_conversation) {
@@ -328,13 +334,14 @@ export async function POST(
         }
       }
 
-      // 7. Mark as sent (single atomic update)
+      // 7. Mark as sent (single atomic update with external_id)
       const sentAt = new Date().toISOString();
       const cost = getMessageCostUsd(msg.template_category || 'MARKETING');
       const { error: updateErr } = await sb.from('dispatch_messages').update({
         status: 'sent',
         sent_at: sentAt,
         cost_usd: cost,
+        external_id: externalId,
       }).eq('id', msg.id);
 
       if (updateErr) {
@@ -344,6 +351,7 @@ export async function POST(
       sentOk = true;
       msg._status = 'sent';
       msg._sent_at = sentAt;
+      msg._external_id = externalId;
     } catch (err: any) {
       const rawError = err.message || 'Unknown error';
       const modeLabel = isDirectWhatsApp ? 'WhatsApp Direto' : 'Chatwoot';
@@ -418,6 +426,7 @@ export async function POST(
         status: msg._status || (sentOk ? 'sent' : 'error'),
         error_message: msg._error_message || null,
         sent_at: msg._sent_at || null,
+        external_id: msg._external_id || null,
       },
     });
   } catch (error: any) {

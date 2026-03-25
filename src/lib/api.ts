@@ -103,6 +103,7 @@ export const api = {
         status: string;
         error_message?: string | null;
         sent_at?: string | null;
+        external_id?: string | null;
       };
     }>(`/dispatches/${dispatchId}/send-next`, { method: 'POST' }),
 

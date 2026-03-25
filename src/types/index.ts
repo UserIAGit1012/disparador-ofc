@@ -118,6 +118,7 @@ export interface DispatchMessage {
   error_message?: string;
   cost_usd?: number;
   sent_at?: string;
+  external_id?: string;
   created_at: string;
 }
 

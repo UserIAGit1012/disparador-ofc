@@ -292,6 +292,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                       status: processedMsg.status,
                       error_message: processedMsg.error_message || undefined,
                       sent_at: processedMsg.sent_at || undefined,
+                      external_id: processedMsg.external_id || m.external_id,
                     }
                   : m
               );
@@ -308,6 +309,7 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                 status: processedMsg.status,
                 error_message: processedMsg.error_message || undefined,
                 sent_at: processedMsg.sent_at || undefined,
+                external_id: processedMsg.external_id || undefined,
                 created_at: '',
               },
             ];
@@ -855,6 +857,14 @@ export default function DispatchMonitor({ dispatchId, onBack }: Props) {
                           : "--:--:--"}
                       </span>
                     </div>
+
+                    {/* WhatsApp Message ID confirmation */}
+                    {msg.status === "sent" && msg.external_id && (
+                      <div className="mt-1 ml-6 text-[10px] text-muted-foreground">
+                        <span className="text-green-600 font-medium">Meta ID:</span>{" "}
+                        <span className="font-mono select-all">{msg.external_id}</span>
+                      </div>
+                    )}
 
                     {/* Error details */}
                     {msg.status === "error" && msg.error_message && (
