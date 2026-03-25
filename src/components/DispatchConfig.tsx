@@ -29,6 +29,8 @@ interface LabelOption {
   color?: string;
 }
 
+type SendMode = 'chatwoot' | 'whatsapp_direct';
+
 interface Props {
   delayMin: number;
   delayMax: number;
@@ -48,6 +50,9 @@ interface Props {
   postSendLabels: string[];
   onPostSendLabelsChange: (value: string[]) => void;
   availableLabels: LabelOption[];
+  sendMode: SendMode;
+  onSendModeChange: (value: SendMode) => void;
+  whatsappAvailable: boolean;
 }
 
 export default function DispatchConfig({
@@ -69,9 +74,61 @@ export default function DispatchConfig({
   postSendLabels,
   onPostSendLabelsChange,
   availableLabels,
+  sendMode,
+  onSendModeChange,
+  whatsappAvailable,
 }: Props) {
   return (
     <div className="space-y-4">
+      {/* Send Mode */}
+      <div className="space-y-3">
+        <Label className="text-base font-semibold">Modo de Envio</Label>
+        <div className="grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => onSendModeChange('chatwoot')}
+            className={`p-3 rounded-lg border-2 text-left transition-colors ${
+              sendMode === 'chatwoot'
+                ? 'border-primary bg-primary/5'
+                : 'border-muted hover:border-muted-foreground/30'
+            }`}
+          >
+            <p className="text-sm font-medium">Visivel no Chatwoot</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              Mensagem aparece na conversa do Chatwoot normalmente
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (whatsappAvailable) onSendModeChange('whatsapp_direct');
+            }}
+            disabled={!whatsappAvailable}
+            className={`p-3 rounded-lg border-2 text-left transition-colors ${
+              sendMode === 'whatsapp_direct'
+                ? 'border-primary bg-primary/5'
+                : whatsappAvailable
+                  ? 'border-muted hover:border-muted-foreground/30'
+                  : 'border-muted opacity-50 cursor-not-allowed'
+            }`}
+          >
+            <p className="text-sm font-medium">Invisivel (direto WhatsApp)</p>
+            <p className="text-xs text-muted-foreground mt-1">
+              {whatsappAvailable
+                ? 'Envia direto pela API Meta, nao aparece no Chatwoot'
+                : 'Credenciais WhatsApp nao encontradas na inbox'}
+            </p>
+          </button>
+        </div>
+        {sendMode === 'whatsapp_direct' && (
+          <p className="text-xs text-yellow-600 bg-yellow-500/10 rounded px-3 py-2">
+            As acoes pos-envio (abrir conversa, atribuir agente, etiquetas) nao serao executadas no modo invisivel.
+          </p>
+        )}
+      </div>
+
+      <Separator />
+
       <div className="space-y-3">
         <Label className="text-base font-semibold">Configuracao de Delay</Label>
         <p className="text-sm text-muted-foreground">

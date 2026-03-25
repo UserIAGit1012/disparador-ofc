@@ -44,6 +44,9 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
   const [postSendLabels, setPostSendLabels] = useState<string[]>([]);
   const [availableLabels, setAvailableLabels] = useState<{ id: number; title: string; color?: string }[]>([]);
 
+  const [sendMode, setSendMode] = useState<'chatwoot' | 'whatsapp_direct'>('chatwoot');
+  const [whatsappAvailable, setWhatsappAvailable] = useState(false);
+
   const [blacklistFiltered, setBlacklistFiltered] = useState(0);
   const [blacklistTotal, setBlacklistTotal] = useState(0);
   const [submitting, setSubmitting] = useState(false);
@@ -54,10 +57,20 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
     api.getLabels(accountId).then(setAvailableLabels).catch(() => setAvailableLabels([]));
   }, [accountId]);
 
-  const handleInboxChange = (id: number) => {
+  const handleInboxChange = async (id: number) => {
     setInboxId(id);
     setTemplate(null);
     setVariablesConfig({});
+    setSendMode('chatwoot');
+    setWhatsappAvailable(false);
+
+    // Check WhatsApp credentials availability
+    try {
+      const creds = await api.getWhatsAppCredentials(accountId, id);
+      setWhatsappAvailable(creds.available);
+    } catch {
+      setWhatsappAvailable(false);
+    }
   };
 
   const handleTemplateChange = (tpl: Template) => {
@@ -204,6 +217,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
         open_conversation: openConversation,
         assign_agent_id: assignAgentId,
         post_send_labels: postSendLabels.length > 0 ? postSendLabels : null,
+        send_mode: sendMode,
         template_config: {
           ...templatePayloadBase,
           processedParams: buildProcessedParams({}),
@@ -364,6 +378,9 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
             postSendLabels={postSendLabels}
             onPostSendLabelsChange={setPostSendLabels}
             availableLabels={availableLabels}
+            sendMode={sendMode}
+            onSendModeChange={setSendMode}
+            whatsappAvailable={whatsappAvailable}
           />
 
           <Separator />

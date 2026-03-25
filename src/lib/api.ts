@@ -22,6 +22,15 @@ export const api = {
   getTemplates: (accountId: number, inboxId: number) =>
     request<any[]>(`/accounts/${accountId}/inboxes/${inboxId}/templates`),
 
+  getWhatsAppCredentials: (accountId: number, inboxId: number) =>
+    request<{
+      available: boolean;
+      phone_number_id?: string;
+      api_key?: string;
+      error?: string;
+      debug?: any;
+    }>(`/accounts/${accountId}/inboxes/${inboxId}/whatsapp-credentials`),
+
   filterConversations: (accountId: number, payload: any, page = 1) =>
     request<any>(`/accounts/${accountId}/conversations/filter?page=${page}`, {
       method: 'POST',

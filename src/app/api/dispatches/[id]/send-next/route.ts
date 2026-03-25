@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { chatwootPost, chatwootGet } from '@/lib/chatwoot';
+import { sendWhatsAppTemplate } from '@/lib/whatsapp-direct';
 import { getMessageCostUsd } from '@/lib/costs';
 
 function getSupabaseServer(): SupabaseClient {
@@ -233,51 +234,98 @@ export async function POST(
     const processedParams = buildProcessedParamsForContact(templateConfig, contact);
     const messageContent = buildMessageContent(templateConfig, contact);
 
-    // 5. Send via Chatwoot API
-    const chatwootPath = `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/messages`;
-    const chatwootBody = {
-      content: messageContent,
-      message_type: 'outgoing',
-      template_params: {
-        name: msg.template_name,
-        language: templateConfig.language || 'pt_BR',
-        category: msg.template_category || 'MARKETING',
-        processed_params: processedParams,
-      },
-    };
+    // 5. Send message based on send_mode
+    const isDirectWhatsApp = dispatch.send_mode === 'whatsapp_direct';
 
     try {
-      await chatwootPost(chatwootPath, chatwootBody);
+      if (isDirectWhatsApp) {
+        // --- DIRECT WHATSAPP API (invisible in Chatwoot) ---
+        if (!contact.phone) {
+          throw new Error('Contato sem numero de telefone - impossivel enviar direto pelo WhatsApp');
+        }
 
-      // 6. Post-send actions (non-blocking)
-      if (dispatch.open_conversation) {
-        try {
-          await chatwootPost(
-            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/toggle_status`,
-            { status: 'open' }
-          );
-        } catch { /* must not block */ }
-      }
-      if (dispatch.assign_agent_id) {
-        try {
-          await chatwootPost(
-            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/assignments`,
-            { assignee_id: dispatch.assign_agent_id }
-          );
-        } catch { /* must not block */ }
-      }
-      if (dispatch.post_send_labels && dispatch.post_send_labels.length > 0) {
-        try {
-          const convData = await chatwootGet(
-            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}`
-          );
-          const currentLabels: string[] = convData?.labels || [];
-          const merged = Array.from(new Set([...currentLabels, ...dispatch.post_send_labels]));
-          await chatwootPost(
-            `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/labels`,
-            { labels: merged }
-          );
-        } catch { /* must not block dispatch flow */ }
+        // Get WhatsApp credentials from Chatwoot inbox
+        const inboxData = await chatwootGet(
+          `/api/v1/accounts/${dispatch.account_id}/inboxes/${dispatch.inbox_id}`
+        );
+
+        const phoneNumberId = inboxData.provider_config?.phone_number_id
+          || inboxData.channel?.provider_config?.phone_number_id;
+        const apiKey = inboxData.provider_config?.api_key
+          || inboxData.channel?.provider_config?.api_key;
+
+        if (!phoneNumberId || !apiKey) {
+          throw new Error('Credenciais WhatsApp nao encontradas na inbox do Chatwoot');
+        }
+
+        // Build body params for direct API
+        const variablesConfig = templateConfig.variablesConfig || {};
+        const bodyParams: Record<string, string> = {};
+        for (const [key] of Object.entries(variablesConfig)) {
+          if (key === 'header_media_url') continue;
+          bodyParams[key] = resolveVar(variablesConfig, key, contact);
+        }
+
+        const headerMediaUrl = variablesConfig['header_media_url']?.value;
+        const headerComponent = (templateConfig.components || []).find((c: any) => c.type === 'HEADER');
+
+        const result = await sendWhatsAppTemplate({
+          credentials: { phoneNumberId, apiKey },
+          recipientPhone: contact.phone,
+          templateName: msg.template_name,
+          language: templateConfig.language || 'pt_BR',
+          bodyParams: Object.keys(bodyParams).length > 0 ? bodyParams : undefined,
+          headerMediaUrl: headerMediaUrl || undefined,
+          headerMediaType: headerComponent?.format?.toLowerCase(),
+        });
+
+        if (!result.success) {
+          throw new Error(result.error || 'Falha no envio direto WhatsApp');
+        }
+      } else {
+        // --- CHATWOOT API (visible in Chatwoot) ---
+        const chatwootPath = `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/messages`;
+        await chatwootPost(chatwootPath, {
+          content: messageContent,
+          message_type: 'outgoing',
+          template_params: {
+            name: msg.template_name,
+            language: templateConfig.language || 'pt_BR',
+            category: msg.template_category || 'MARKETING',
+            processed_params: processedParams,
+          },
+        });
+
+        // Post-send actions (only for Chatwoot mode)
+        if (dispatch.open_conversation) {
+          try {
+            await chatwootPost(
+              `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/toggle_status`,
+              { status: 'open' }
+            );
+          } catch { /* must not block */ }
+        }
+        if (dispatch.assign_agent_id) {
+          try {
+            await chatwootPost(
+              `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/assignments`,
+              { assignee_id: dispatch.assign_agent_id }
+            );
+          } catch { /* must not block */ }
+        }
+        if (dispatch.post_send_labels && dispatch.post_send_labels.length > 0) {
+          try {
+            const convData = await chatwootGet(
+              `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}`
+            );
+            const currentLabels: string[] = convData?.labels || [];
+            const merged = Array.from(new Set([...currentLabels, ...dispatch.post_send_labels]));
+            await chatwootPost(
+              `/api/v1/accounts/${dispatch.account_id}/conversations/${msg.conversation_id}/labels`,
+              { labels: merged }
+            );
+          } catch { /* must not block dispatch flow */ }
+        }
       }
 
       // 7. Mark as sent
@@ -293,16 +341,14 @@ export async function POST(
       } catch { /* columns may not exist */ }
 
       sentOk = true;
-      // Attach processed message info for real-time UI update
       msg._status = 'sent';
       msg._sent_at = sentAt;
     } catch (err: any) {
-      // Build detailed error message for debugging — include URL and key info
       const rawError = err.message || 'Unknown error';
-      const errorDetail = `${rawError} | URL: ${chatwootPath} | account: ${dispatch.account_id} | conv: ${msg.conversation_id} | template: ${msg.template_name}`.substring(0, 500);
+      const modeLabel = isDirectWhatsApp ? 'WhatsApp Direto' : 'Chatwoot';
+      const errorDetail = `[${modeLabel}] ${rawError} | conv: ${msg.conversation_id} | phone: ${contact.phone || 'N/A'} | template: ${msg.template_name}`.substring(0, 500);
       console.error(`[dispatch:${dispatchId}] Erro ao enviar msg ${msg.id}:`, errorDetail);
 
-      // Mark as error first (status update must succeed even if error_message column doesn't exist)
       await sb.from('dispatch_messages').update({ status: 'error' }).eq('id', msg.id);
       try {
         await sb.from('dispatch_messages').update({
