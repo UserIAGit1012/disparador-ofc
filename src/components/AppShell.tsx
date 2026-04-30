@@ -1,5 +1,6 @@
 "use client";
 
+import { usePathname } from "next/navigation";
 import { useAuth } from "@/components/AuthProvider";
 import { useAccount } from "@/components/AccountProvider";
 import LoginPage from "@/app/login/page";
@@ -14,8 +15,13 @@ import {
 import { LogOut, Loader2 } from "lucide-react";
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
-  const { user, loading, signOut } = useAuth();
+  const pathname = usePathname();
+  const { user, loading, signOut, profile } = useAuth();
   const { accounts, selectedAccount, loading: loadingAccounts, selectAccount } = useAccount();
+
+  if (pathname === "/reset") {
+    return <>{children}</>;
+  }
 
   if (loading) {
     return (
@@ -37,22 +43,28 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
 
           {/* Account selector in header */}
           <div className="ml-4">
-            <Select
-              value={selectedAccount?.id?.toString() || ""}
-              onValueChange={(v) => selectAccount(parseInt(v))}
-              disabled={loadingAccounts}
-            >
-              <SelectTrigger className="w-[200px] h-9">
-                <SelectValue placeholder={loadingAccounts ? "Carregando..." : "Selecione a conta"} />
-              </SelectTrigger>
-              <SelectContent>
-                {accounts.map((acc) => (
-                  <SelectItem key={acc.id} value={acc.id.toString()}>
-                    {acc.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            {!loadingAccounts && accounts.length === 0 ? (
+              <span className="text-xs text-muted-foreground">
+                Nenhuma conta vinculada ao seu acesso. Fale com o admin.
+              </span>
+            ) : (
+              <Select
+                value={selectedAccount?.id?.toString() || ""}
+                onValueChange={(v) => selectAccount(parseInt(v))}
+                disabled={loadingAccounts}
+              >
+                <SelectTrigger className="w-[200px] h-9">
+                  <SelectValue placeholder={loadingAccounts ? "Carregando..." : "Selecione a conta"} />
+                </SelectTrigger>
+                <SelectContent>
+                  {accounts.map((acc) => (
+                    <SelectItem key={acc.id} value={acc.id.toString()}>
+                      {acc.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
 
           <nav className="ml-auto flex items-center gap-4">
@@ -62,9 +74,17 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             <a href="/disparos" className="text-sm font-medium hover:underline">
               Historico
             </a>
+            <a href="/templates" className="text-sm font-medium hover:underline">
+              Templates
+            </a>
             <a href="/dashboard" className="text-sm font-medium hover:underline">
               Metricas
             </a>
+            {profile.isAdmin && (
+              <a href="/admin/users" className="text-sm font-medium hover:underline">
+                Admin
+              </a>
+            )}
             <div className="flex items-center gap-2 ml-2 pl-4 border-l">
               <span className="text-xs text-muted-foreground hidden sm:inline">
                 {user.email}

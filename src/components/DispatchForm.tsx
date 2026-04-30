@@ -12,6 +12,7 @@ import LabelSelector from "@/components/LabelSelector";
 import ConversationList from "@/components/ConversationList";
 import DispatchConfig from "@/components/DispatchConfig";
 import BlacklistNotice from "@/components/BlacklistNotice";
+import DispatchConfirmDialog from "@/components/DispatchConfirmDialog";
 import LastActivityFilter, {
   type ActivityFilterValue,
   filterByActivity,
@@ -30,6 +31,8 @@ interface Props {
 
 export default function DispatchForm({ accountId, onDispatchCreated, onBack }: Props) {
   const [inboxId, setInboxId] = useState<number | null>(null);
+  const [inboxName, setInboxName] = useState<string | null>(null);
+  const [inboxPhoneNumberId, setInboxPhoneNumberId] = useState<string | null>(null);
   const [template, setTemplate] = useState<Template | null>(null);
   const [variablesConfig, setVariablesConfig] = useState<TemplateVarsConfig>({});
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -50,6 +53,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
   const [blacklistFiltered, setBlacklistFiltered] = useState(0);
   const [blacklistTotal, setBlacklistTotal] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
 
   useEffect(() => {
     if (!accountId) return;
@@ -57,17 +61,20 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
     api.getLabels(accountId).then(setAvailableLabels).catch(() => setAvailableLabels([]));
   }, [accountId]);
 
-  const handleInboxChange = async (id: number) => {
+  const handleInboxChange = async (id: number, inbox?: { name: string }) => {
     setInboxId(id);
+    setInboxName(inbox?.name || null);
+    setInboxPhoneNumberId(null);
     setTemplate(null);
     setVariablesConfig({});
     setSendMode('chatwoot');
     setWhatsappAvailable(false);
 
-    // Check WhatsApp credentials availability
+    // Check WhatsApp credentials availability + capture phone_number_id for per-user filtering
     try {
       const creds = await api.getWhatsAppCredentials(accountId, id);
       setWhatsappAvailable(creds.available);
+      setInboxPhoneNumberId(creds.phone_number_id || null);
     } catch {
       setWhatsappAvailable(false);
     }
@@ -152,7 +159,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
     return processedParams;
   };
 
-  const handleDispatch = async () => {
+  const executeDispatch = async () => {
     if (!accountId || !inboxId || !template) return;
 
     let selectedConvs = filteredConversations.filter((c) => c.selected);
@@ -205,6 +212,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
       .insert({
         account_id: accountId,
         inbox_id: inboxId,
+        phone_number_id: inboxPhoneNumberId,
         template_name: template.name,
         template_category: category,
         total_conversations: selectedConvs.length,
@@ -253,6 +261,7 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
 
     // Monitor will auto-detect pending status and trigger /start
     setSubmitting(false);
+    setConfirmOpen(false);
     onDispatchCreated(dispatchId);
   };
 
@@ -400,7 +409,11 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
                 <span>Nenhuma conversa selecionada</span>
               )}
             </div>
-            <Button size="lg" onClick={handleDispatch} disabled={!canDispatch}>
+            <Button
+              size="lg"
+              onClick={() => setConfirmOpen(true)}
+              disabled={!canDispatch}
+            >
               {submitting ? (
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" />
               ) : scheduledAt ? (
@@ -413,6 +426,28 @@ export default function DispatchForm({ accountId, onDispatchCreated, onBack }: P
           </div>
         </CardContent>
       </Card>
+
+      <DispatchConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => {
+          if (!submitting) setConfirmOpen(open);
+        }}
+        onConfirm={executeDispatch}
+        submitting={submitting}
+        inboxName={inboxName}
+        template={template}
+        variablesConfig={variablesConfig}
+        conversations={filteredConversations}
+        delayMin={delayMin}
+        delayMax={delayMax}
+        blacklistDays={blacklistDays}
+        scheduledAt={scheduledAt}
+        sendMode={sendMode}
+        openConversation={openConversation}
+        assignAgentId={assignAgentId}
+        agents={agents}
+        postSendLabels={postSendLabels}
+      />
     </div>
   );
 }

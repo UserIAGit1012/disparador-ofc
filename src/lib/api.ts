@@ -1,6 +1,21 @@
+import { getSupabase } from '@/lib/supabase';
+
+async function getAuthHeader(): Promise<Record<string, string>> {
+  const sb = getSupabase();
+  if (!sb) return {};
+  const { data } = await sb.auth.getSession();
+  const token = data?.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function request<T>(url: string, options?: RequestInit): Promise<T> {
+  const auth = await getAuthHeader();
   const res = await fetch(`/api${url}`, {
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...auth,
+      ...(options?.headers || {}),
+    },
     ...options,
   });
   if (!res.ok) {
@@ -11,6 +26,15 @@ async function request<T>(url: string, options?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getMe: () =>
+    request<{
+      user_id: string;
+      email: string;
+      is_admin: boolean;
+      allowed_phone_ids: string[];
+      allowed_waba_ids: string[];
+    }>('/me'),
+
   getAccounts: () => request<any[]>('/accounts'),
 
   getAgents: (accountId: number) =>
@@ -150,4 +174,147 @@ export const api = {
     if (month) params.set('month', month);
     return request<any>(`/dashboard/stats?${params.toString()}`);
   },
+
+  // Meta Business Accounts (multiple BMs, global)
+  listMetaBusinesses: () =>
+    request<
+      {
+        id: string;
+        name: string;
+        business_account_id: string;
+        access_token_masked: string;
+        created_at?: string;
+        updated_at?: string;
+      }[]
+    >('/meta-businesses'),
+
+  createMetaBusiness: (data: {
+    name: string;
+    business_account_id: string;
+    access_token: string;
+  }) =>
+    request<{
+      id: string;
+      name: string;
+      business_account_id: string;
+      access_token_masked: string;
+    }>('/meta-businesses', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+
+  updateMetaBusiness: (
+    id: string,
+    data: { name?: string; business_account_id?: string; access_token?: string }
+  ) =>
+    request<any>(`/meta-businesses/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteMetaBusiness: (id: string) =>
+    request<{ success: boolean }>(`/meta-businesses/${id}`, {
+      method: 'DELETE',
+    }),
+
+  // Aggregated across all BMs
+  getAllMetaNumbers: () =>
+    request<
+      {
+        business: { id: string; name: string; business_account_id: string };
+        numbers: any[];
+        error: string | null;
+      }[]
+    >('/meta-numbers'),
+
+  getAllMetaTemplates: () =>
+    request<
+      {
+        business: { id: string; name: string; business_account_id: string };
+        templates: any[];
+        error: string | null;
+      }[]
+    >('/meta-templates'),
+
+  // Per-BM template ops
+  createMetaTemplate: (
+    businessId: string,
+    data: {
+      waba_id: string;
+      name: string;
+      language: string;
+      category: string;
+      components: any[];
+    }
+  ) =>
+    request<{ id?: string; status?: string; category?: string }>(
+      `/meta-businesses/${businessId}/templates`,
+      { method: 'POST', body: JSON.stringify(data) }
+    ),
+
+  deleteMetaTemplate: (
+    businessId: string,
+    name: string,
+    wabaId: string,
+    hsmId?: string
+  ) => {
+    const qs = new URLSearchParams({ waba_id: wabaId });
+    if (hsmId) qs.set('hsm_id', hsmId);
+    return request<{ success: boolean }>(
+      `/meta-businesses/${businessId}/templates/${encodeURIComponent(name)}?${qs.toString()}`,
+      { method: 'DELETE' }
+    );
+  },
+
+  // Admin: users
+  listUsers: () =>
+    request<
+      {
+        user_id: string;
+        email: string;
+        name: string | null;
+        is_admin: boolean;
+        allowed_phone_ids: string[];
+        allowed_waba_ids: string[];
+        created_at?: string;
+        last_sign_in_at?: string;
+      }[]
+    >('/admin/users'),
+
+  bulkCreateUsers: (emails: string[]) =>
+    request<
+      {
+        email: string;
+        user_id?: string;
+        password?: string;
+        error?: string;
+      }[]
+    >('/admin/users', {
+      method: 'POST',
+      body: JSON.stringify({ emails }),
+    }),
+
+  updateUser: (
+    userId: string,
+    data: {
+      name?: string;
+      is_admin?: boolean;
+      allowed_phone_ids?: string[];
+      allowed_waba_ids?: string[];
+    }
+  ) =>
+    request<{ success: boolean }>(`/admin/users/${userId}`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    }),
+
+  deleteUser: (userId: string) =>
+    request<{ success: boolean }>(`/admin/users/${userId}`, {
+      method: 'DELETE',
+    }),
+
+  resetUserPassword: (userId: string) =>
+    request<{ success: boolean; password: string }>(`/admin/users/${userId}`, {
+      method: 'POST',
+    }),
 };

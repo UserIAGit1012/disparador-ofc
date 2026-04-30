@@ -9,7 +9,7 @@ import type { Inbox } from "@/types";
 interface Props {
   accountId: number | null;
   value: number | null;
-  onChange: (inboxId: number) => void;
+  onChange: (inboxId: number, inbox?: Inbox) => void;
 }
 
 export default function InboxSelector({ accountId, value, onChange }: Props) {
@@ -33,7 +33,11 @@ export default function InboxSelector({ accountId, value, onChange }: Props) {
       <Label>Caixa de Entrada</Label>
       <Select
         value={value?.toString() || ""}
-        onValueChange={(v) => onChange(parseInt(v))}
+        onValueChange={(v) => {
+          const id = parseInt(v);
+          const inbox = inboxes.find((i) => i.id === id);
+          onChange(id, inbox);
+        }}
         disabled={!accountId || loading}
       >
         <SelectTrigger>

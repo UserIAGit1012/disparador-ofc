@@ -1,13 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
+import { requireAuth } from '@/lib/auth';
+
+export const dynamic = 'force-dynamic';
+export const revalidate = 0;
 
 function getSupabaseServer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
   return createClient(url, key);
 }
 
 export async function GET(req: NextRequest) {
+  const { perms, response } = await requireAuth(req);
+  if (!perms) return response;
   try {
     const { searchParams } = new URL(req.url);
     const accountId = searchParams.get('account_id') || '';
@@ -33,11 +39,26 @@ export async function GET(req: NextRequest) {
       dateTo = `${month}-${String(lastDay).padStart(2, '0')}`;
     }
 
-    // First get dispatch IDs for this account
+    // First get dispatch IDs for this account (filtered by user's allowed phone numbers)
     let dispatchQuery = sb
       .from('dispatches')
       .select('id')
       .eq('account_id', parseInt(accountId));
+
+    if (!perms.isAdmin) {
+      if (perms.allowedPhoneIds.length === 0) {
+        return NextResponse.json({
+          totalSent: 0,
+          totalErrors: 0,
+          totalCostUsd: 0,
+          errorRate: 0,
+          sentByDay: [],
+          costByMonth: [],
+          topTemplates: [],
+        });
+      }
+      dispatchQuery = dispatchQuery.in('phone_number_id', perms.allowedPhoneIds);
+    }
 
     const { data: dispatchRows, error: dErr } = await dispatchQuery;
     if (dErr) {

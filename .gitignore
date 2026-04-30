@@ -24,3 +24,21 @@ next-env.d.ts
 
 .vercel
 .env*.local
+
+# SSA framework (personal per developer)
+memory/*.md
+!memory/.gitkeep
+MEMORY.md
+ACTIVE_TASK.md
+
+# Credenciais geradas (nunca commitar)
+CREDENCIAIS.local.md
+*.local.md
+*.local.txt
+*.local.csv
+
+# Debug artifacts (têm credenciais hardcoded ou são one-off)
+scripts/debug-*.mjs
+scripts/test-admin-apis.mjs
+*.png
+!public/**/*.png

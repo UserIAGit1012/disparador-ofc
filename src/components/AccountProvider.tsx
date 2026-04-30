@@ -2,6 +2,7 @@
 
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
 import { api } from "@/lib/api";
+import { useAuth } from "@/components/AuthProvider";
 import type { Account } from "@/types";
 
 interface AccountContextValue {
@@ -25,30 +26,45 @@ export function useAccount() {
 }
 
 export default function AccountProvider({ children }: { children: ReactNode }) {
+  const { user, loading: authLoading } = useAuth();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccount, setSelectedAccount] = useState<Account | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (authLoading) return;
+    if (!user) {
+      setAccounts([]);
+      setSelectedAccount(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
     api.getAccounts()
       .then((data: any[]) => {
         const mapped = data.map((a) => ({ id: a.id, name: a.name }));
         setAccounts(mapped);
 
-        // Auto-select if only one account or restore from localStorage
         const savedId = localStorage.getItem("selectedAccountId");
-        if (savedId) {
-          const found = mapped.find((a) => a.id === parseInt(savedId));
-          if (found) setSelectedAccount(found);
-        }
-        if (!savedId && mapped.length === 1) {
+        const savedMatch = savedId
+          ? mapped.find((a) => a.id === parseInt(savedId))
+          : null;
+
+        if (savedMatch) {
+          setSelectedAccount(savedMatch);
+        } else if (mapped.length === 1) {
           setSelectedAccount(mapped[0]);
           localStorage.setItem("selectedAccountId", mapped[0].id.toString());
+        } else if (savedId && !savedMatch) {
+          // Saved selection no longer accessible (e.g., user perms changed)
+          localStorage.removeItem("selectedAccountId");
+          setSelectedAccount(null);
         }
       })
       .catch(console.error)
       .finally(() => setLoading(false));
-  }, []);
+  }, [user?.id, authLoading]);
 
   const selectAccount = (id: number) => {
     const acc = accounts.find((a) => a.id === id);

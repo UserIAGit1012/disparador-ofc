@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAccount } from "@/components/AccountProvider";
+import { useAuth } from "@/components/AuthProvider";
 import { getSupabase } from "@/lib/supabase";
 import { api } from "@/lib/api";
 import { formatUsd } from "@/lib/costs";
@@ -13,6 +14,7 @@ import type { DispatchRecord } from "@/types";
 
 export default function DispatchHistory() {
   const { accountId } = useAccount();
+  const { profile } = useAuth();
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [retrying, setRetrying] = useState<string | null>(null);
@@ -30,6 +32,14 @@ export default function DispatchHistory() {
       if (accountId) {
         query = query.eq("account_id", accountId);
       }
+      if (!profile.isAdmin) {
+        if (profile.allowedPhoneIds.length === 0) {
+          setDispatches([]);
+          setLoading(false);
+          return;
+        }
+        query = query.in("phone_number_id", profile.allowedPhoneIds);
+      }
       const { data, error } = await query;
       if (!error && data) setDispatches(data);
     }
@@ -38,7 +48,8 @@ export default function DispatchHistory() {
 
   useEffect(() => {
     loadDispatches();
-  }, [accountId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, profile.isAdmin, profile.allowedPhoneIds.join(",")]);
 
   const handleRetry = async (dispatchId: string) => {
     setRetrying(dispatchId);

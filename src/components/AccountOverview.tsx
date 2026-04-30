@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { api } from "@/lib/api";
 import { getSupabase } from "@/lib/supabase";
+import { useAuth } from "@/components/AuthProvider";
 import { formatUsd, formatBrl, usdToBrl } from "@/lib/costs";
 import {
   Send,
@@ -33,6 +34,7 @@ export default function AccountOverview({
   onNewDispatch,
   onMonitorDispatch,
 }: Props) {
+  const { profile } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [dispatches, setDispatches] = useState<DispatchRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -49,12 +51,20 @@ export default function AccountOverview({
       // Load recent dispatches from Supabase
       const sb = getSupabase();
       if (sb) {
-        const { data } = await sb
+        let query = sb
           .from("dispatches")
           .select("*")
           .eq("account_id", accountId)
           .order("created_at", { ascending: false })
           .limit(20);
+        if (!profile.isAdmin) {
+          if (profile.allowedPhoneIds.length === 0) {
+            setDispatches([]);
+            return;
+          }
+          query = query.in("phone_number_id", profile.allowedPhoneIds);
+        }
+        const { data } = await query;
         setDispatches((data as DispatchRecord[]) || []);
       }
     } catch (err) {
@@ -66,7 +76,8 @@ export default function AccountOverview({
 
   useEffect(() => {
     loadData();
-  }, [accountId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, profile.isAdmin, profile.allowedPhoneIds.join(",")]);
 
   const activeDispatches = dispatches.filter(
     (d) => d.status === "running" || d.status === "pending" || d.status === "paused"
