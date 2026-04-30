@@ -45,7 +45,7 @@ interface NumberOption {
 
 interface JustCreated {
   email: string;
-  password: string;
+  password?: string;
   user_id?: string;
   error?: string;
 }
