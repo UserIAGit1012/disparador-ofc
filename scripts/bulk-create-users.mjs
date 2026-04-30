@@ -92,14 +92,22 @@ async function adminCreateUser(email, password, displayName) {
 }
 
 async function findUserByEmail(email) {
-  const res = await fetch(
-    `${SUPA_URL}/auth/v1/admin/users?email=${encodeURIComponent(email)}`,
-    {
-      headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` },
-    }
-  );
-  const data = await res.json().catch(() => ({}));
-  return data?.users?.[0] || null;
+  // O ?email=... do GoTrue admin API NÃO filtra (ignora silenciosamente);
+  // precisa paginar e bater email localmente.
+  const target = email.toLowerCase();
+  let page = 1;
+  while (true) {
+    const res = await fetch(
+      `${SUPA_URL}/auth/v1/admin/users?page=${page}&per_page=200`,
+      { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } }
+    );
+    const data = await res.json().catch(() => ({}));
+    const users = data?.users || [];
+    const hit = users.find((u) => u.email?.toLowerCase() === target);
+    if (hit) return hit;
+    if (users.length < 200) return null;
+    page++;
+  }
 }
 
 async function adminUpdatePassword(userId, password) {

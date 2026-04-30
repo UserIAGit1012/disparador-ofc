@@ -11,12 +11,24 @@ const SERVICE = env.SUPABASE_SERVICE_ROLE_KEY;
 
 const email = process.argv[2] || 'adminmarilia@gmail.com';
 
-const userRes = await fetch(
-  `${SUPA_URL}/auth/v1/admin/users?email=${encodeURIComponent(email)}`,
-  { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } }
-);
-const userData = await userRes.json();
-const user = userData?.users?.[0];
+// O ?email=... do GoTrue admin API NÃO filtra; precisa paginar e bater localmente.
+async function findByEmail(target) {
+  let page = 1;
+  while (true) {
+    const r = await fetch(
+      `${SUPA_URL}/auth/v1/admin/users?page=${page}&per_page=200`,
+      { headers: { apikey: SERVICE, Authorization: `Bearer ${SERVICE}` } }
+    );
+    const d = await r.json();
+    const users = d?.users || [];
+    const hit = users.find((u) => u.email?.toLowerCase() === target.toLowerCase());
+    if (hit) return hit;
+    if (users.length < 200) return null;
+    page++;
+  }
+}
+
+const user = await findByEmail(email);
 if (!user) {
   console.log('User NOT found');
   process.exit(1);
